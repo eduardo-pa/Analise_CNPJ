@@ -133,7 +133,7 @@ interação, então o custo é aceitável.
 ## 📂 Estrutura do Projeto
 
 ```
-Analise_CNPJ-/
+Analise_CNPJ/
 ├── dashboard_tcc.py            # App principal Streamlit
 ├── database.py                 # Conexão (credenciais via ambiente)
 ├── etl_cnpj.py                 # ETL completo: 20 shards → Bronze → Gold
@@ -172,8 +172,8 @@ Analise_CNPJ-/
 ### 2. Clone o repositório
 
 ```bash
-git clone https://github.com/AldebaraFork/Analise_CNPJ-
-cd Analise_CNPJ-
+git clone https://github.com/eduardo-pa/Analise_CNPJ
+cd Analise_CNPJ
 ```
 
 ### 3. Instale as dependências
@@ -323,7 +323,7 @@ empresas brasileiras não chegam aos cinco anos de atividade.
 **Eduardo** — Tecnólogo em Análise e Desenvolvimento de Sistemas
 Faculdade Impacta — Turma 2026
 
-[![GitHub](https://img.shields.io/badge/GitHub-AldebaraFork-181717?style=flat&logo=github)](https://github.com/AldebaraFork)
+[![GitHub](https://img.shields.io/badge/GitHub-eduardo--pa-181717?style=flat&logo=github)](https://github.com/eduardo-pa)
 
 ---
 
