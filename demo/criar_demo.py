@@ -40,6 +40,7 @@ SCRIPTS = [
     RAIZ / "mv_correcoes_painel.sql",
     RAIZ / "mv_analises_sobrevivencia.sql",
     RAIZ / "mv_analises_avancadas.sql",
+    RAIZ / "mv_socios.sql",
 ]
 
 

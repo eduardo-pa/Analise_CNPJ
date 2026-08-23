@@ -21,6 +21,7 @@ Quatro perguntas que a base pública permite responder, e quase nenhuma análise
 | Quantas empresas o país tem, de fato? | **66.682.481** registradas · 40,3% ativas · 46,6% baixadas |
 | Empresa brasileira nasce capitalizada? | **26,3%** abrem com capital social zero |
 | MEI sobrevive menos que empresa de regime normal? | Comparável safra a safra no dashboard, controlando pela idade |
+| Empresa de sócio único dura menos? | Comparável por faixa de sócios, dentro da mesma safra |
 
 Cada número sai de uma view materializada sobre as 66,7 M de linhas — não de amostra, não de estimativa.
 
@@ -28,8 +29,8 @@ Cada número sai de uma view materializada sobre as 66,7 M de linhas — não de
 
 - **Join de 66,7 M × 69,9 M linhas no PostgreSQL**, não em pandas — a base não cabe em memória. Os CSVs entram por `COPY` direto do ZIP, sem descompactar em disco.
 - **Query-First**: `COUNT`, `SUM`, `percentile_cont` e `GROUP BY` rodam no banco; o Python recebe agregado pronto. Nenhuma consulta do dashboard traz linha crua.
-- **7 portões de qualidade** que abortam a carga com rollback em vez de gravar dado silenciosamente errado.
-- **125 testes**, dos quais 21 rodam contra um PostgreSQL de verdade — não contra mocks.
+- **9 portões de qualidade** que abortam a carga com rollback em vez de gravar dado silenciosamente errado.
+- **109 testes**, dos quais 26 rodam contra um PostgreSQL de verdade — não contra mocks.
 - **CI que renderiza o dashboard inteiro** a cada push, para pegar gráfico que quebra em tela sem quebrar no import.
 - **Base de demonstração sintética**: qualquer pessoa clona e roda em 5 minutos, sem baixar os 7 GB da Receita.
 
@@ -37,7 +38,7 @@ Cada número sai de uma view materializada sobre as 66,7 M de linhas — não de
 
 ## 🌐 Demonstração online
 
-**[▶ Abrir o dashboard](https://SEU-APP.streamlit.app)**
+**[▶ Abrir o dashboard](https://demografia-empresarial-brasil.streamlit.app/)**
 
 A instância pública roda sobre uma base **sintética** de 300 mil empresas, com o mesmo esquema e o mesmo código da real. Serve para ver o produto funcionando; os números do Brasil são os desta página, apurados sobre as 66,7 milhões de linhas.
 
@@ -62,7 +63,7 @@ DATABASE_URL="postgresql://user:senha@ep-xxx.neon.tech/neondb?sslmode=require" \
 **3. [Streamlit Community Cloud](https://share.streamlit.io)**: conecte o repositório, aponte para `app.py` e configure os secrets:
 
 ```toml
-db_url = "postgresql://user:senha@ep-xxx.neon.tech/cnpj?sslmode=require"
+db_url = "postgresql://user:senha@ep-xxx.neon.tech/neondb?sslmode=require"
 CNPJ_COMPETENCIA = "2026-02-28"
 modo_demo = true
 ```
@@ -84,7 +85,7 @@ pip install -r requirements.txt
 
 cp .env.example .env          # o padrão já aponta para o Postgres do compose
 docker compose up -d
-python demo/criar_demo.py     # gold sintética + as 15 views materializadas
+python demo/criar_demo.py     # gold sintética + as 17 views materializadas
 
 streamlit run app.py
 ```
@@ -99,13 +100,13 @@ streamlit run app.py
 ZIPs da Receita Federal
       │  COPY via stream, sem descompactar em disco
       ▼
-  bronze_empresas · bronze_estabelecimentos · bronze_simples   (~75 GB, UNLOGGED)
-      │  join no PostgreSQL + 7 portões de qualidade
+  bronze_empresas · bronze_estabelecimentos · bronze_simples · bronze_socios
+      │  join no PostgreSQL + 9 portões de qualidade
       ▼
   empresas_gold        66,7 M linhas · 1 linha por empresa (matriz)
       │  agregações pré-calculadas
       ▼
-  15 views materializadas
+  17 views materializadas
       │
       ▼
   Streamlit (app.py)
@@ -146,6 +147,7 @@ Quem pegou foi a validação cruzada contra fonte externa, não a inspeção do 
 | **Concentração por década** | **< 60%** | **O desalinhamento de shards: a base errada tinha 81%; a correta, 39,4%** |
 | Cobertura Simples/MEI | > 20% | `LEFT JOIN` que não casou chave |
 | Baixadas sem motivo | < 50% | Coluna não carregada |
+| Empresas com ao menos um sócio | > 10% | `LEFT JOIN` de sócios que não casou chave |
 
 **Testes de regressão nomeados pelo defeito.** Um falha se alguém voltar a derivar UF de `LEFT(cod_municipio, 2)` — o campo `municipio` da Receita é código interno da RFB, não IBGE, e São Paulo lá é 7107. Outro falha se alguma década voltar a concentrar mais de 60% da base. Outro se a sobrevivência voltar a contar empresas ativas.
 
@@ -166,6 +168,7 @@ Quem pegou foi a validação cruzada contra fonte externa, não a inspeção do 
 | Natalidade × mortalidade | Em que anos o país fechou mais empresas do que abriu |
 | Regime tributário | MEI sobrevive menos? — comparado dentro da mesma safra |
 | Motivo da baixa | Encerramento voluntário ou cancelamento por omissão? |
+| Sociedade | Empresa de sócio único dura menos? — por faixa de sócios |
 | Capital por município | Trajetória do capital típico nas maiores cidades |
 | Comparador regional | Dois a quatro estados ou municípios lado a lado |
 
@@ -195,7 +198,7 @@ O CI roda os dois níveis a cada push, contra um PostgreSQL provisionado no runn
 
 ## 🗄️ Rodar sobre a base completa
 
-**1.** Baixe uma competência em [dados abertos da Receita](https://dadosabertos.rfb.gov.br/CNPJ/): `Empresas0..9.zip`, `Estabelecimentos0..9.zip`, `Simples.zip`, `Cnaes.zip`, `Municipios.zip`, `Naturezas.zip`, `Motivos.zip`.
+**1.** Baixe uma competência em [dados abertos da Receita](https://dadosabertos.rfb.gov.br/CNPJ/): `Empresas0..9.zip`, `Estabelecimentos0..9.zip`, `Socios0..9.zip`, `Simples.zip`, `Cnaes.zip`, `Municipios.zip`, `Naturezas.zip`, `Motivos.zip`.
 
 **2.** Configure o `.env`:
 
@@ -215,6 +218,7 @@ python aplicar_indices.py mv_base_dashboard.sql
 python aplicar_indices.py mv_correcoes_painel.sql
 python aplicar_indices.py mv_analises_sobrevivencia.sql
 python aplicar_indices.py mv_analises_avancadas.sql
+python aplicar_indices.py mv_socios.sql
 streamlit run app.py
 ```
 
@@ -257,7 +261,9 @@ PostgreSQL 16+ · Python 3.11+ · Streamlit · Plotly · SQLAlchemy · psycopg2 
 
 ## 📄 Fonte dos dados
 
-[Dados abertos do CNPJ — Receita Federal](https://dadosabertos.rfb.gov.br/CNPJ/). Dados públicos, sem informação pessoal de sócios pessoa física neste recorte. Competência de referência: fevereiro/2026.
+[Dados abertos do CNPJ — Receita Federal](https://dadosabertos.rfb.gov.br/CNPJ/). Competência de referência: fevereiro/2026.
+
+**Privacidade.** O `Socios.zip` é o único arquivo do conjunto que traz dado de pessoa física — nome do sócio e CPF parcialmente mascarado. É público, mas isso não é licença para espalhá-lo: aqui esses campos ficam na camada bronze e **não chegam à tabela consultada pelo dashboard**, que recebe apenas contagens (quantos sócios, quantos PJ, quantos PF). Nenhuma view materializada, gráfico, exportação ou instância publicada carrega identificação de sócio, e há um teste de integração que falha se alguém propagar uma dessas colunas.
 
 ## 👤 Autor
 

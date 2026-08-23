@@ -72,6 +72,7 @@ WITH base AS (
         random() AS r_situacao,
         random() AS r_regime,
         random() AS r_vida,
+        random() AS r_socios,
         (ARRAY[7107,6001,4123,8105,4557,2927,1301,9701,7133,2611,5107,1100]
         )[1 + (random() * 11)::int] AS mun,
         (ARRAY[4712100,5611201,5611203,9602501,4781400,4399103,4930202,
@@ -113,7 +114,27 @@ SELECT
          ELSE false END                                          AS opcao_simples,
     CASE WHEN r_regime < 0.15 THEN NULL
          WHEN r_regime < 0.45 THEN true
-         ELSE false END                                          AS opcao_mei
+         ELSE false END                                          AS opcao_mei,
+    -- Contagem de sócios. Na base real vem do Socios.zip, agregado ANTES do
+    -- join; aqui é gerado direto. Muitas empresas com zero: empresário
+    -- individual e MEI não têm registro de sócio.
+    --
+    -- O sorteio (r_socios) vem do CTE `base`, um por linha. A primeira versão
+    -- usava CROSS JOIN LATERAL com uma subconsulta que não referenciava `base`
+    -- — ou seja, não era lateral de verdade. O PostgreSQL avaliou aquilo UMA
+    -- vez e replicou o resultado, e as 300 mil empresas saíram com zero sócios.
+    CASE WHEN r_socios < 0.46 THEN 0
+         WHEN r_socios < 0.70 THEN 1
+         WHEN r_socios < 0.90 THEN 2
+         WHEN r_socios < 0.98 THEN 3
+         ELSE                      6 END                         AS qtd_socios,
+    CASE WHEN r_socios >= 0.70 AND r_socios < 0.72 THEN 1 ELSE 0 END AS qtd_socios_pj,
+    CASE WHEN r_socios < 0.46 THEN 0
+         WHEN r_socios < 0.70 THEN 1
+         WHEN r_socios < 0.72 THEN 1
+         WHEN r_socios < 0.90 THEN 2
+         WHEN r_socios < 0.98 THEN 3
+         ELSE                      6 END                         AS qtd_socios_pf
 FROM base;
 
 ALTER TABLE empresas_gold ADD PRIMARY KEY (cnpj_basico);

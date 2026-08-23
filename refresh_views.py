@@ -34,6 +34,9 @@ VIEWS = [
     "mv_sobrevivencia_regime",
     "mv_motivo_baixa",
     "mv_coorte_regime",
+    # Criadas por mv_socios.sql
+    "mv_sobrevivencia_socios",
+    "mv_coorte_socios",
 ]
 
 

@@ -113,7 +113,13 @@ SQLALCHEMY_DATABASE_URL = resolver_url()
 # com UnicodeDecodeError, escondendo o erro real.
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL,
+    # Postgres gerenciado (Neon, Supabase) derruba conexão ociosa e hiberna a
+    # instância. pool_pre_ping testa a conexão antes de entregá-la;
+    # pool_recycle aposenta a que passou de 5 min. Sem os dois, a primeira
+    # interação depois de um tempo parado estoura com "server closed the
+    # connection unexpectedly" — falha que só aparece em deploy, nunca local.
     pool_pre_ping=True,
+    pool_recycle=300,
     connect_args={"client_encoding": "utf8"},
 )
 

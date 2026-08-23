@@ -56,6 +56,7 @@ MVS_ESPERADAS = [
     "mv_crescimento_uf", "mv_painel_ano", "mv_painel_cidade",
     "mv_capital_ano_municipio", "mv_sobrevivencia_regime", "mv_motivo_baixa",
     "mv_coorte_regime",
+    "mv_sobrevivencia_socios", "mv_coorte_socios",
 ]
 
 
@@ -185,3 +186,47 @@ def test_nenhuma_decada_concentra_a_base(cur):
         ) t
     """)
     assert cur.fetchone()[0] < 60
+
+
+def test_contagem_de_socios_e_coerente(cur):
+    """PJ + PF nunca pode passar do total.
+
+    A Gold recebe as três contagens de uma agregação só; se alguém trocar a
+    ordem do FILTER ou duplicar o join com bronze_socios, esta soma estoura.
+    O terceiro identificador (3 = sócio estrangeiro) explica a folga quando
+    PJ + PF é menor que o total.
+    """
+    cur.execute("""
+        SELECT count(*) FROM empresas_gold
+        WHERE qtd_socios_pj + qtd_socios_pf > qtd_socios
+    """)
+    assert cur.fetchone()[0] == 0
+
+    cur.execute("SELECT count(*) FROM empresas_gold WHERE qtd_socios < 0")
+    assert cur.fetchone()[0] == 0
+
+
+def test_socios_nao_vazam_identificacao(cur):
+    """PRIVACIDADE: a Gold não pode ter nome nem CPF de sócio.
+
+    O Socios.zip é o único arquivo do conjunto com dado de pessoa física. A
+    regra do projeto é que ele fica na bronze; a Gold recebe só contagens.
+    Este teste falha se alguém propagar uma coluna de identificação.
+    """
+    cur.execute("""
+        SELECT column_name FROM information_schema.columns
+        WHERE table_name = 'empresas_gold'
+          AND (column_name ILIKE '%%nome_socio%%'
+               OR column_name ILIKE '%%cpf%%'
+               OR column_name ILIKE '%%representante%%')
+    """)
+    vazamentos = [r[0] for r in cur.fetchall()]
+    assert not vazamentos, f"identificação de sócio na Gold: {vazamentos}"
+
+
+def test_faixas_de_socios_cobrem_a_base(cur):
+    """A soma das faixas tem que ser a base inteira — nenhuma empresa fora."""
+    cur.execute("SELECT sum(total_empresas) FROM mv_sobrevivencia_socios")
+    das_faixas = cur.fetchone()[0]
+    cur.execute("SELECT count(*) FROM empresas_gold")
+    assert das_faixas == cur.fetchone()[0]

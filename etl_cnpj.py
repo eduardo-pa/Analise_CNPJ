@@ -124,6 +124,37 @@ CREATE UNLOGGED TABLE bronze_simples (
 ){ts};
 """
 
+# Socios0..9.zip — uma linha por SÓCIO, várias por empresa.
+#
+# ATENÇÃO, e é o motivo de este comentário existir: este é o único arquivo do
+# conjunto que contém dado de PESSOA FÍSICA — nome do sócio e CPF parcialmente
+# mascarado. É público, mas isso não é licença para espalhá-lo.
+#
+# A regra deste projeto: nome e CPF ficam na bronze e não saem dali. A camada
+# Gold recebe apenas CONTAGENS (quantos sócios, quantos são PJ, quantos são
+# PF). Nenhuma view materializada, nenhum gráfico, nenhuma exportação e nenhuma
+# instância publicada carrega identificação de sócio.
+#
+# As colunas de identificação são declaradas abaixo porque o COPY precisa
+# consumir o CSV inteiro para posicionar os campos — não porque serão usadas.
+# Depois que a Gold é construída, dá para descartar a bronze:
+#     DROP TABLE bronze_socios;
+DDL_SOCIOS = """
+CREATE UNLOGGED TABLE bronze_socios (
+    cnpj_basico                text,
+    identificador_socio        text,   -- 1 = PJ, 2 = PF, 3 = estrangeiro
+    nome_socio                 text,   -- pessoa física: não vai para a Gold
+    cpf_cnpj_socio             text,   -- pessoa física: não vai para a Gold
+    qualificacao_socio         text,
+    data_entrada_sociedade     text,
+    pais                       text,
+    representante_legal        text,   -- CPF: não vai para a Gold
+    nome_representante         text,   -- não vai para a Gold
+    qualificacao_representante text,
+    faixa_etaria               text
+){ts};
+"""
+
 
 def log(msg):
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
@@ -266,28 +297,38 @@ ARQUIVO_MVS = "views_materializadas.sql"
 def bronze_pronta(cur):
     """Diz se as bronze já existem e estão populadas.
 
-    bronze_simples entra na checagem: quem já tinha as bronze carregadas de uma
-    execução anterior NÃO tem essa tabela, e precisa carregá-la. Sem isso,
-    CNPJ_SKIP_BRONZE=1 pularia a carga e a Gold sairia sem Simples/MEI.
+    bronze_simples e bronze_socios entram na checagem: quem já tinha as bronze
+    carregadas de uma execução anterior NÃO tem essas tabelas. Sem isso,
+    CNPJ_SKIP_BRONZE=1 pularia a carga e a Gold sairia sem Simples/MEI e sem a
+    contagem de sócios — silenciosamente, porque o join é LEFT.
     """
     cur.execute("SELECT to_regclass('bronze_empresas'), "
                 "to_regclass('bronze_estabelecimentos'), "
-                "to_regclass('bronze_simples')")
+                "to_regclass('bronze_simples'), "
+                "to_regclass('bronze_socios')")
     if any(t is None for t in cur.fetchone()):
         return False
     cur.execute("SELECT (SELECT count(*) FROM bronze_empresas) > 0 "
                 "AND (SELECT count(*) FROM bronze_estabelecimentos) > 0 "
-                "AND (SELECT count(*) FROM bronze_simples) > 0")
+                "AND (SELECT count(*) FROM bronze_simples) > 0 "
+                "AND (SELECT count(*) FROM bronze_socios) > 0")
     return cur.fetchone()[0]
 
 
-def simples_pronta(cur):
-    """Só a bronze_simples — permite carregar apenas ela sem refazer os 30 min."""
-    cur.execute("SELECT to_regclass('bronze_simples')")
-    if cur.fetchone()[0] is None:
-        return False
-    cur.execute("SELECT count(*) > 0 FROM bronze_simples")
-    return cur.fetchone()[0]
+def complementares_prontas(cur):
+    """Só as bronze pequenas (Simples e Sócios).
+
+    Permite carregar apenas elas quando Empresas e Estabelecimentos já estão no
+    banco, poupando os ~30 min de COPY dos arquivos grandes.
+    """
+    for tabela in ("bronze_simples", "bronze_socios"):
+        cur.execute("SELECT to_regclass(%s)", (tabela,))
+        if cur.fetchone()[0] is None:
+            return False
+        cur.execute(f"SELECT count(*) > 0 FROM {tabela}")
+        if not cur.fetchone()[0]:
+            return False
+    return True
 
 
 def capturar_dependentes(cur):
@@ -366,7 +407,13 @@ SELECT
     -- 'S'/'N' da Receita viram booleano; ausência no Simples.zip vira NULL
     -- (a empresa nunca foi avaliada), que é diferente de 'N' (avaliada e fora).
     CASE si.opcao_simples WHEN 'S' THEN true WHEN 'N' THEN false END AS opcao_simples,
-    CASE si.opcao_mei     WHEN 'S' THEN true WHEN 'N' THEN false END AS opcao_mei
+    CASE si.opcao_mei     WHEN 'S' THEN true WHEN 'N' THEN false END AS opcao_mei,
+    -- Sócios entram só como CONTAGEM. Nome e CPF ficam na bronze.
+    -- 0 não é ausência de dado: empresário individual e MEI legitimamente não
+    -- têm registro de sócio no arquivo da Receita.
+    COALESCE(so.qtd_socios, 0)    AS qtd_socios,
+    COALESCE(so.qtd_socios_pj, 0) AS qtd_socios_pj,
+    COALESCE(so.qtd_socios_pf, 0) AS qtd_socios_pf
 FROM (
     SELECT lpad(cnpj_basico, 8, '0') AS cnpj_basico,
            razao_social, natureza_juridica, capital_social
@@ -396,7 +443,21 @@ LEFT JOIN (
            max(NULLIF(opcao_mei, ''))     AS opcao_mei
     FROM bronze_simples
     GROUP BY 1
-) si USING (cnpj_basico);
+) si USING (cnpj_basico)
+LEFT JOIN (
+    -- A agregação acontece AQUI, antes do join. É o que garante uma linha por
+    -- empresa: juntar bronze_socios diretamente multiplicaria a empresa pelo
+    -- número de sócios e a PRIMARY KEY estouraria lá embaixo.
+    --
+    -- Só contagens saem desta subconsulta. Nome e CPF do sócio não são sequer
+    -- referenciados — ficam na bronze e não entram na Gold.
+    SELECT lpad(cnpj_basico, 8, '0')                                AS cnpj_basico,
+           count(*)                                                 AS qtd_socios,
+           count(*) FILTER (WHERE identificador_socio = '1')         AS qtd_socios_pj,
+           count(*) FILTER (WHERE identificador_socio = '2')         AS qtd_socios_pf
+    FROM bronze_socios
+    GROUP BY 1
+) so USING (cnpj_basico);
 
 ALTER TABLE empresas_gold ADD PRIMARY KEY (cnpj_basico);
 """
@@ -445,6 +506,14 @@ CHECKS = [
      "SELECT round(100.0 * count(*) FILTER (WHERE motivo_situacao IS NULL) "
      "/ NULLIF(count(*), 0), 1) FROM empresas_gold WHERE situacao_cadastral = 8",
      lambda v, ctx: v is not None and v < 50),
+
+    # Mesma lógica do portão do Simples: o join com sócios é LEFT, então uma
+    # chave que não casa não quebra nada — devolve 0 em tudo e a análise de
+    # sociedade sai dizendo que o Brasil inteiro é de sócio único.
+    ("Empresas com ao menos um sócio",
+     "SELECT round(100.0 * count(*) FILTER (WHERE qtd_socios > 0) "
+     "/ NULLIF(count(*), 0), 1) FROM empresas_gold",
+     lambda v, ctx: v is not None and v > 10),
 ]
 
 
@@ -499,26 +568,31 @@ def main():
 
             if PULAR_BRONZE and bronze_pronta(cur):
                 log("Bronze já carregada — pulando (CNPJ_SKIP_BRONZE=1)")
-            elif PULAR_BRONZE and not simples_pronta(cur):
-                # Caso comum ao atualizar um banco que já rodou o ETL antigo:
-                # Empresas e Estabelecimentos estão lá, só falta o Simples.
-                # Carrega os ~285 MB dele e poupa os 30 min das outras duas.
-                log("Bronze existente sem bronze_simples — carregando só o Simples")
-                cur.execute("DROP TABLE IF EXISTS bronze_simples")
+            elif PULAR_BRONZE and not complementares_prontas(cur):
+                # Caso comum ao atualizar um banco de uma execução anterior:
+                # Empresas e Estabelecimentos já estão lá, faltam as bronze
+                # pequenas. Carrega só elas e poupa os 30 min das grandes.
+                log("Bronze existente sem Simples/Sócios — carregando só essas duas")
+                cur.execute("DROP TABLE IF EXISTS bronze_simples, bronze_socios")
                 cur.execute(DDL_SIMPLES.format(ts=CLAUSULA_TS))
+                cur.execute(DDL_SOCIOS.format(ts=CLAUSULA_TS))
                 copiar_shards(cur, "Simples*.zip", "bronze_simples")
+                copiar_shards(cur, "Socios*.zip", "bronze_socios")
             else:
                 log("Recriando tabelas bronze")
                 cur.execute("DROP TABLE IF EXISTS bronze_empresas, "
-                            "bronze_estabelecimentos, bronze_simples")
+                            "bronze_estabelecimentos, bronze_simples, "
+                            "bronze_socios")
                 cur.execute(DDL_EMPRESAS.format(ts=CLAUSULA_TS))
                 cur.execute(DDL_ESTABELECIMENTOS.format(ts=CLAUSULA_TS))
                 cur.execute(DDL_SIMPLES.format(ts=CLAUSULA_TS))
+                cur.execute(DDL_SOCIOS.format(ts=CLAUSULA_TS))
 
                 copiar_shards(cur, "Empresas*.zip", "bronze_empresas")
                 copiar_shards(cur, "Estabelecimentos*.zip",
                               "bronze_estabelecimentos")
                 copiar_shards(cur, "Simples*.zip", "bronze_simples")
+                copiar_shards(cur, "Socios*.zip", "bronze_socios")
 
         # Persiste as bronze antes de validar. Sem isso, uma reprovação de
         # portão faria rollback de ~30 min de carga junto com a Gold.
@@ -557,6 +631,7 @@ def main():
             cur.execute("CREATE INDEX idx_eg_municipio ON empresas_gold (cod_municipio)")
             cur.execute("CREATE INDEX idx_eg_uf ON empresas_gold (uf)")
             cur.execute("CREATE INDEX idx_eg_situacao ON empresas_gold (situacao_cadastral)")
+            cur.execute("CREATE INDEX idx_eg_qtd_socios ON empresas_gold (qtd_socios)")
             cur.execute("CREATE INDEX idx_eg_data_abertura ON empresas_gold "
                         "USING brin (data_abertura) WITH (pages_per_range = 128)")
             # Índice parcial covering: só ~73% das linhas têm capital > 0, e o

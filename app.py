@@ -280,6 +280,47 @@ def carregar_regime() -> pd.DataFrame:
 
 
 @st.cache_data(ttl=3600)
+def carregar_socios() -> pd.DataFrame:
+    sql = text("""
+        SELECT faixa_ordem, faixa, total_empresas, pct_ativas,
+               baixadas_medidas, media, mediana, pct_menos_5_anos
+        FROM mv_sobrevivencia_socios
+        ORDER BY faixa_ordem
+    """)
+    with engine.connect() as conn:
+        return pd.read_sql(sql, conn)
+
+
+@st.cache_data(ttl=3600)
+def carregar_coorte_socios() -> pd.DataFrame:
+    """Histograma (safra x faixa de sócios x ano da baixa)."""
+    sql = text("""
+        SELECT coorte, faixa_ordem, ano_baixa, qtd
+        FROM mv_coorte_socios
+        WHERE coorte BETWEEN 1996 AND :ano_fim
+    """)
+    with engine.connect() as conn:
+        return pd.read_sql(sql, conn, params={"ano_fim": ULTIMO_ANO_COMPLETO})
+
+
+def curva_por_faixa(df: pd.DataFrame, coorte: int, faixa_ordem: int) -> pd.DataFrame:
+    """Mesma matemática de curva_de_sobrevivencia(), recortada por faixa."""
+    d = df[(df["coorte"] == coorte) & (df["faixa_ordem"] == faixa_ordem)]
+    total = int(d["qtd"].sum())
+    if total == 0:
+        return pd.DataFrame(columns=["anos", "pct", "vivas"])
+
+    janela = ULTIMO_ANO_COMPLETO - coorte
+    mortas = d[d["ano_baixa"] >= 0]
+    linhas = []
+    for t in range(janela + 1):
+        acumuladas = int(mortas.loc[mortas["ano_baixa"] < t, "qtd"].sum())
+        vivas = total - acumuladas
+        linhas.append({"anos": t, "vivas": vivas, "pct": 100.0 * vivas / total})
+    return pd.DataFrame(linhas)
+
+
+@st.cache_data(ttl=3600)
 def carregar_motivo_baixa() -> pd.DataFrame:
     sql = text("""
         SELECT motivo, descricao, qtd, pct, mediana_anos
@@ -530,7 +571,35 @@ st.set_page_config(
     page_icon="🏢",
     layout="wide",
 )
-init_db()
+# Falha de conexão no start vira traceback censurado no Streamlit Cloud —
+# "The original error message is redacted to prevent data leaks" — que não
+# ajuda nem o visitante nem quem mantém. Aqui ela vira uma tela explicando o
+# que checar, sem expor credencial. A mensagem original segue no log.
+try:
+    init_db()
+except Exception as e_conexao:
+    st.error("### ❌ Não foi possível conectar ao banco de dados")
+    st.markdown(
+        f"""
+O aplicativo subiu, encontrou a credencial e falhou ao abrir a conexão.
+Tipo do erro: `{type(e_conexao).__name__}`.
+
+**O que costuma ser:**
+
+1. **Senha ou host errados** nos secrets — confira a connection string no painel
+   do provedor e cole de novo, inteira.
+2. **Falta `?sslmode=require`** no fim da URL. Neon, Supabase e a maioria dos
+   Postgres gerenciados recusam conexão sem TLS.
+3. **`&channel_binding=require`** no fim da string. Algumas versões do psycopg2
+   não negociam esse parâmetro — remova só ele e mantenha o `sslmode`.
+4. **Banco hibernado.** Plano gratuito suspende a instância por inatividade;
+   a primeira conexão pode estourar o tempo limite. Recarregue a página.
+
+A mensagem completa do PostgreSQL está no log do deploy
+(**Manage app**, canto inferior direito).
+"""
+    )
+    st.stop()
 
 # ---------------------------------------------------------------------------
 # MODO DEMONSTRAÇÃO
@@ -1469,6 +1538,152 @@ section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] hr {
                         )
             except Exception as e_cr:
                 st.error(f"❌ Erro na comparação por regime: {e_cr}")
+
+    st.divider()
+
+    # --- SOCIEDADE ---
+    st.title("🤝 Sociedade e Sobrevivência")
+    st.caption(
+        "Empresa de sócio único morre mais? A base permite responder — e "
+        "**nenhum sócio é identificado aqui**. O arquivo de Sócios da Receita "
+        "traz nome e CPF de pessoas físicas; esses campos ficam na camada bronze "
+        "e não chegam à tabela consultada pelo dashboard, que recebe apenas "
+        "contagens."
+    )
+
+    if "mv_sobrevivencia_socios" not in mvs:
+        st.info(
+            "Esta seção depende da coluna `qtd_socios`, que vem do `Socios.zip`. "
+            "Para habilitá-la:\n\n"
+            "```\n"
+            "set CNPJ_SKIP_BRONZE=1\n"
+            "python etl_cnpj.py\n"
+            "python aplicar_indices.py mv_socios.sql\n"
+            "```"
+        )
+    else:
+        try:
+            df_soc = carregar_socios()
+
+            col_s1, col_s2 = st.columns([1, 1])
+
+            with col_s1:
+                st.subheader("Quanto duram, por número de sócios")
+                df_soc_ord = df_soc.sort_values("faixa_ordem")
+                fig_soc = px.bar(
+                    df_soc_ord, x="faixa", y="mediana", template="plotly_dark",
+                    labels={"faixa": "", "mediana": "Mediana de sobrevivência (anos)"},
+                    custom_data=["total_empresas", "pct_ativas", "pct_menos_5_anos"],
+                )
+                fig_soc.update_traces(
+                    marker_color="#3987e5",
+                    hovertemplate=(
+                        "<b>%{x}</b><br>"
+                        "Mediana: %{y:.1f} anos<br>"
+                        "%{customdata[0]:,} empresas · %{customdata[1]:.1f}% ativas<br>"
+                        "%{customdata[2]:.1f}% fecharam antes dos 5 anos<extra></extra>"
+                    ),
+                )
+                fig_soc.update_layout(height=360, margin=dict(t=20),
+                                      xaxis_tickangle=-20)
+                st.plotly_chart(fig_soc, width="stretch")
+
+                st.dataframe(
+                    df_soc_ord[["faixa", "total_empresas", "pct_ativas",
+                                "mediana", "pct_menos_5_anos"]],
+                    width="stretch", hide_index=True,
+                    column_config={
+                        "faixa": "Sócios",
+                        "total_empresas": st.column_config.NumberColumn(
+                            "Empresas", format="%d"),
+                        "pct_ativas": st.column_config.NumberColumn(
+                            "% ativas", format="%.1f%%"),
+                        "mediana": st.column_config.NumberColumn(
+                            "Mediana (anos)", format="%.1f"),
+                        "pct_menos_5_anos": st.column_config.NumberColumn(
+                            "% < 5 anos", format="%.1f%%"),
+                    },
+                )
+
+            with col_s2:
+                st.subheader("Dentro da mesma safra")
+                if "mv_coorte_socios" not in mvs:
+                    st.info("Rode `python aplicar_indices.py mv_socios.sql`")
+                else:
+                    df_cs = carregar_coorte_socios()
+                    safras_cs = sorted(
+                        s for s in df_cs["coorte"].unique()
+                        if ULTIMO_ANO_COMPLETO - s >= 5
+                    )
+
+                    if not safras_cs:
+                        st.info("Nenhuma safra tem 5 anos observáveis ainda.")
+                    else:
+                        padrao_cs = (2015 if 2015 in safras_cs
+                                     else safras_cs[len(safras_cs) // 2])
+                        safra_cs = st.select_slider(
+                            "Safra de abertura",
+                            options=safras_cs, value=padrao_cs,
+                            key="safra_socios",
+                        )
+
+                        # Slots 1 a 5 da paleta categórica, na ordem fixa.
+                        CORES_SOCIOS = ["#3987e5", "#d95926", "#199e70",
+                                        "#c98500", "#d55181"]
+                        rotulos = dict(zip(df_soc["faixa_ordem"], df_soc["faixa"]))
+
+                        fig_cs = go.Figure()
+                        for ordem in sorted(rotulos):
+                            curva = curva_por_faixa(df_cs, safra_cs, ordem)
+                            if curva.empty:
+                                continue
+                            fig_cs.add_trace(go.Scatter(
+                                x=curva["anos"], y=curva["pct"],
+                                name=rotulos[ordem], mode="lines+markers",
+                                line=dict(color=CORES_SOCIOS[ordem % 5], width=2),
+                                marker=dict(size=5),
+                                customdata=curva["vivas"],
+                                hovertemplate=(
+                                    f"<b>{rotulos[ordem]}</b><br>"
+                                    "Aos %{x} anos: %{y:.1f}% ativas<br>"
+                                    "%{customdata:,} empresas<extra></extra>"
+                                ),
+                            ))
+
+                        fig_cs.add_vline(
+                            x=5, line_dash="dot",
+                            line_color="rgba(255,255,255,0.35)",
+                            annotation_text="5 anos", annotation_position="top",
+                        )
+                        fig_cs.update_layout(
+                            template="plotly_dark", height=360,
+                            xaxis_title="Anos desde a abertura",
+                            yaxis_title="% ainda não baixadas",
+                            yaxis=dict(ticksuffix="%", range=[0, 101]),
+                            hovermode="x unified",
+                            legend=dict(orientation="h", yanchor="bottom",
+                                        y=1.02, xanchor="left", x=0, title=""),
+                            margin=dict(t=60),
+                        )
+                        st.plotly_chart(fig_cs, width="stretch")
+
+                        st.caption(
+                            f"Safra de {safra_cs}. Fixar o ano de abertura é o que "
+                            "separa efeito de sociedade de efeito de idade: "
+                            "sociedades com muitos sócios tendem a ser mais antigas, "
+                            "então olhar todas juntas faria o número de sócios "
+                            "parecer causa de longevidade quando é só correlação "
+                            "com a época em que abriram."
+                        )
+
+            st.caption(
+                "**'Sem sócio registrado' não é dado faltante.** Empresário "
+                "individual e MEI não têm registro de sócio no arquivo da Receita "
+                "— é uma categoria real, e a mais numerosa da base."
+            )
+
+        except Exception as e_soc:
+            st.error(f"❌ Erro na análise de sócios: {e_soc}")
 
     st.divider()
 
