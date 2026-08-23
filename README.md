@@ -20,6 +20,7 @@ Quatro perguntas que a base pública permite responder, e quase nenhuma análise
 | Quanto tempo uma empresa brasileira dura? | Mediana de **3,3 anos** entre as baixadas |
 | Quantas empresas o país tem, de fato? | **66.682.481** registradas · 40,3% ativas · 46,6% baixadas |
 | Empresa brasileira nasce capitalizada? | **26,3%** abrem com capital social zero |
+| Quanto capital tem uma empresa típica? | **Mediana**, não média — a média nacional é R$ 5,7 milhões e não descreve empresa nenhuma |
 | MEI sobrevive menos que empresa de regime normal? | Comparável safra a safra no dashboard, controlando pela idade |
 | Empresa de sócio único dura menos? | Comparável por faixa de sócios, dentro da mesma safra |
 
@@ -29,8 +30,8 @@ Cada número sai de uma view materializada sobre as 66,7 M de linhas — não de
 
 - **Join de 66,7 M × 69,9 M linhas no PostgreSQL**, não em pandas — a base não cabe em memória. Os CSVs entram por `COPY` direto do ZIP, sem descompactar em disco.
 - **Query-First**: `COUNT`, `SUM`, `percentile_cont` e `GROUP BY` rodam no banco; o Python recebe agregado pronto. Nenhuma consulta do dashboard traz linha crua.
-- **9 portões de qualidade** que abortam a carga com rollback em vez de gravar dado silenciosamente errado.
-- **109 testes**, dos quais 26 rodam contra um PostgreSQL de verdade — não contra mocks.
+- **11 portões de qualidade** que abortam a carga com rollback em vez de gravar dado silenciosamente errado.
+- **115 testes**, dos quais 32 rodam contra um PostgreSQL de verdade — não contra mocks.
 - **CI que renderiza o dashboard inteiro** a cada push, para pegar gráfico que quebra em tela sem quebrar no import.
 - **Base de demonstração sintética**: qualquer pessoa clona e roda em 5 minutos, sem baixar os 7 GB da Receita.
 
@@ -148,12 +149,39 @@ Quem pegou foi a validação cruzada contra fonte externa, não a inspeção do 
 | Cobertura Simples/MEI | > 20% | `LEFT JOIN` que não casou chave |
 | Baixadas sem motivo | < 50% | Coluna não carregada |
 | Empresas com ao menos um sócio | > 10% | `LEFT JOIN` de sócios que não casou chave |
+| **Menor taxa de baixadas entre os regimes** | **> 1%** | **Grupo definido por um atributo que exige estar vivo** |
+| Empresas marcadas como capital-sentinela | < 0,1% | Corte de outlier apagando empresa real |
 
 **Testes de regressão nomeados pelo defeito.** Um falha se alguém voltar a derivar UF de `LEFT(cod_municipio, 2)` — o campo `municipio` da Receita é código interno da RFB, não IBGE, e São Paulo lá é 7107. Outro falha se alguma década voltar a concentrar mais de 60% da base. Outro se a sobrevivência voltar a contar empresas ativas.
 
-**Integração contra banco real.** Teste que mocka a resposta do PostgreSQL prova que o Python sabe ler o DataFrame que ele mesmo inventou — não que a consulta funciona. Os 21 testes de integração rodam SQL de verdade contra um Postgres de verdade, no CI.
+**Integração contra banco real.** Teste que mocka a resposta do PostgreSQL prova que o Python sabe ler o DataFrame que ele mesmo inventou — não que a consulta funciona. Os 32 testes de integração rodam SQL de verdade contra um Postgres de verdade, no CI.
 
 > **0% de datas inválidas não significa 0% de conclusões inválidas.** Validar o dado não é validar o pipeline.
+
+### Dois erros que a base real revelou depois
+
+Os portões acima nasceram do bug dos 44,5 anos. Rodar o dashboard sobre as 66,7 milhões de linhas expôs mais dois — e nenhum deles teria sido pego olhando a tabela.
+
+**Sobrevivência do MEI em 100,0%.** A tela de regime tributário exibia MEI e Simples Nacional com 100,0% de sobrevivência aos 5 anos, contra 48% do regime normal. Parece descoberta; é tautologia. A Receita marca como optante do MEI apenas quem está no regime **agora** — quem fecha sai do registro. O grupo "MEI" continha, por definição, só empresas vivas.
+
+Segmentar uma série histórica por um atributo do presente é condicionar na sobrevivência. É o mesmo erro dos 44,5 anos vestido de outro jeito, e a lição é que ele não vem de uma linha de código ruim: vem de ler uma coluna como se ela descrevesse o passado.
+
+A correção separa as duas perguntas em colunas distintas na camada Gold — `opcao_mei` (é optante hoje) e `foi_mei` (aderiu algum dia, da `data_opcao_mei`, que a Receita preserva depois da baixa). As views de sobrevivência usam a segunda. O portão novo mede a taxa de baixadas do **pior** regime: se algum grupo vier sem empresas fechadas, a carga aborta.
+
+**Capital social com doze noves.** O ranking de maiores empresas era uma lista de holdings com exatamente `R$ 999.999.999.999,00` repetido — o teto de um campo de 12 dígitos, preenchido até estourar. Um punhado de linhas assim respondia por **dois terços do capital declarado do país**: dava 67% do capital nacional a uma única cidade no gráfico de pizza e punha a média nacional de capital em R$ 5,7 milhões.
+
+Para calibrar: a maior capitalização social legítima do Brasil está na ordem de R$ 200 bilhões. O corte fica em R$ 500 bilhões — mais que o dobro disso, e ainda assim abaixo dos doze noves.
+
+O primeiro limiar que escrevi foi R$ 1 trilhão, "com folga". Ele não pegava nada: `999.999.999.999` é exatamente um centavo *menor* que um trilhão. Um número redondo escolhido por cima de um sentinela que é o teto de um campo passa por baixo dele. Quem pegou foi o `diagnostico_qualidade.py` reportando zero ocorrências numa base onde elas visivelmente existiam.
+
+Duas mudanças, e a segunda importa mais que a primeira:
+
+1. A Gold marca esses valores em `capital_sentinela`. A empresa **continua na base** e continua contada em toda análise que não seja de capital — o que sai da conta é o valor, não a linha.
+2. O painel passou a exibir **mediana** de capital, não média. Capital social é distribuição de cauda pesada: mesmo sem nenhum sentinela, a média descreve o topo e não o país. O valor típico é R$ 45 mil, não R$ 5,7 milhões.
+
+Um portão vigia o próprio limiar: se ele passar a marcar mais de 0,1% da base, deixou de remover preenchimento e começou a remover capital legítimo — que é pior que o problema original.
+
+`diagnostico_qualidade.py` roda as duas investigações contra a base real e imprime a evidência.
 
 ---
 
@@ -249,6 +277,7 @@ Analise_CNPJ/
 ├── benchmark_queries.py            # medição das consultas do painel
 ├── metricas_post.py                # apuração dos números sobre a base inteira
 ├── diagnostico_dashboard.py        # verificação numérica das métricas do painel
+├── diagnostico_qualidade.py        # investiga viés de regime e capital-sentinela
 ├── diagnostico_tablespace.py       # diagnóstico do tablespace das bronze
 ├── demo/                           # base sintética para rodar sem os dados reais
 ├── tests/                          # unidade + integração

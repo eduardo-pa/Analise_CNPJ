@@ -20,16 +20,27 @@
 -- Regimes são mutuamente exclusivos na leitura: MEI é um recorte dentro do
 -- Simples, então a ordem do CASE importa (MEI primeiro, senão todo MEI cairia
 -- em "Simples").
+--
+-- A CLASSIFICAÇÃO USA foi_mei / foi_simples, NÃO opcao_mei / opcao_simples.
+--
+-- Esta linha custou um gráfico inteiro. `opcao_mei` é o status de hoje no
+-- registro do Simples, e quem fecha sai do registro — então o grupo "MEI"
+-- definido por ele contém apenas empresas vivas, e a sobrevivência dá 100% por
+-- construção. Foi exatamente o que o dashboard exibiu: MEI e Simples parados
+-- em 100,0% aos 5 anos contra 48% do regime normal.
+--
+-- foi_mei vem de data_opcao_mei, que a Receita preserva depois da exclusão e
+-- depois da baixa. É o único dos dois que descreve o passado.
 -- ---------------------------------------------------------------------------
 DROP MATERIALIZED VIEW IF EXISTS mv_sobrevivencia_regime;
 
 CREATE MATERIALIZED VIEW mv_sobrevivencia_regime AS
 WITH classificada AS (
     SELECT
-        CASE WHEN opcao_mei                THEN 'MEI'
-             WHEN opcao_simples            THEN 'Simples Nacional'
-             WHEN opcao_simples IS FALSE   THEN 'Regime normal'
-             ELSE                               'Não informado' END AS regime,
+        CASE WHEN foi_mei                THEN 'MEI'
+             WHEN foi_simples            THEN 'Simples Nacional'
+             WHEN foi_simples IS FALSE   THEN 'Regime normal'
+             ELSE                             'Não informado' END AS regime,
         situacao_cadastral,
         CASE WHEN situacao_cadastral = 8
                   AND data_situacao IS NOT NULL
@@ -105,10 +116,11 @@ DROP MATERIALIZED VIEW IF EXISTS mv_coorte_regime;
 CREATE MATERIALIZED VIEW mv_coorte_regime AS
 SELECT
     EXTRACT(YEAR FROM data_abertura)::int AS coorte,
-    CASE WHEN opcao_mei              THEN 'MEI'
-         WHEN opcao_simples          THEN 'Simples Nacional'
-         WHEN opcao_simples IS FALSE THEN 'Regime normal'
-         ELSE                             'Não informado' END AS regime,
+    -- foi_mei / foi_simples, pelo mesmo motivo da view 1 acima.
+    CASE WHEN foi_mei              THEN 'MEI'
+         WHEN foi_simples          THEN 'Simples Nacional'
+         WHEN foi_simples IS FALSE THEN 'Regime normal'
+         ELSE                           'Não informado' END AS regime,
     COALESCE(
         CASE WHEN situacao_cadastral = 8
                   AND data_situacao IS NOT NULL

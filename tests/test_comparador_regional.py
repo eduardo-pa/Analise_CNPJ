@@ -6,7 +6,7 @@ Testes para as queries e lógica do Comparador Regional.
 Schema real confirmado:
   - municipios_referencia: colunas 'codigo' e 'descricao'
   - empresas_gold: cod_municipio é sequencial RFB (não IBGE)
-  - mv_comparador_uf_kpis: cod_uf, total_empresas, capital_medio
+  - mv_kpis_uf: uf, total_empresas, capital_medio, capital_mediano, pct_ativas
   - mv_crescimento_municipio: ano, cod_municipio, nome_municipio, total
 
 Executar: python -m pytest tests/test_comparador_regional.py -v
@@ -28,17 +28,17 @@ def df_kpi_uf_mock() -> pd.DataFrame:
     return pd.DataFrame({
         "cod_uf":         ["35", "33", "31"],
         "total_empresas": [5_000_000, 2_000_000, 1_500_000],
-        "capital_medio":  [85_000.0, 72_000.0, 65_000.0],
+        "capital_mediano":  [85_000.0, 72_000.0, 65_000.0],
     })
 
 
 @pytest.fixture
 def df_kpi_uf_decimal_mock() -> pd.DataFrame:
-    """DataFrame com capital_medio como Decimal (como retorna o PostgreSQL)."""
+    """DataFrame com capital_mediano como Decimal (como retorna o PostgreSQL)."""
     return pd.DataFrame({
         "cod_uf":         ["35", "33"],
         "total_empresas": [5_000_000, 2_000_000],
-        "capital_medio":  [Decimal("85432.50"), Decimal("72100.00")],
+        "capital_mediano":  [Decimal("85432.50"), Decimal("72100.00")],
     })
 
 
@@ -81,17 +81,17 @@ def mock_engine():
 class TestTransformacoes:
     """Testa lógica de transformação pura, sem I/O."""
 
-    def test_capital_medio_decimal_convertido_para_float(self, df_kpi_uf_decimal_mock):
+    def test_capital_mediano_decimal_convertido_para_float(self, df_kpi_uf_decimal_mock):
         """Decimal do PostgreSQL deve ser convertível para float antes de f-string."""
         df = df_kpi_uf_decimal_mock.copy()
-        df["capital_medio"] = df["capital_medio"].apply(float)
+        df["capital_mediano"] = df["capital_mediano"].apply(float)
 
-        for valor in df["capital_medio"]:
-            assert isinstance(valor, float), "capital_medio deve ser float após conversão"
+        for valor in df["capital_mediano"]:
+            assert isinstance(valor, float), "capital_mediano deve ser float após conversão"
             formatted = f"R$ {valor:,.2f}"
             assert "R$" in formatted
 
-    def test_capital_medio_formatacao_br(self):
+    def test_capital_mediano_formatacao_br(self):
         """Formatação de valor monetário brasileiro não deve lançar TypeError."""
         valor = float(Decimal("123456.78"))
         resultado = f"R$ {valor:,.2f}"
@@ -160,13 +160,13 @@ class TestTransformacoes:
         assert isinstance(top_cnaes, list)
 
     def test_ordenacao_bar_chart_capital(self, df_kpi_uf_mock):
-        """Bar chart de capital médio deve estar ordenado de forma decrescente."""
-        df = df_kpi_uf_mock.sort_values("capital_medio", ascending=False)
-        capitais = df["capital_medio"].tolist()
+        """Bar chart de capital mediano deve estar ordenado de forma decrescente."""
+        df = df_kpi_uf_mock.sort_values("capital_mediano", ascending=False)
+        capitais = df["capital_mediano"].tolist()
 
         for i in range(len(capitais) - 1):
             assert capitais[i] >= capitais[i + 1], (
-                "Capital médio deve ser decrescente no bar chart"
+                "Capital mediano deve ser decrescente no bar chart"
             )
 
 
@@ -177,10 +177,16 @@ class TestTransformacoes:
 class TestSchema:
     """Valida que as estruturas de dados aderem ao schema real confirmado."""
 
-    def test_mv_comparador_uf_kpis_colunas(self, df_kpi_uf_mock):
-        """MV mv_comparador_uf_kpis deve ter colunas: cod_uf, total_empresas, capital_medio."""
-        colunas_esperadas = {"cod_uf", "total_empresas", "capital_medio"}
-        assert colunas_esperadas.issubset(set(df_kpi_uf_mock.columns))
+    # REMOVIDO: test_mv_comparador_uf_kpis_colunas.
+    #
+    # Ele construía um DataFrame com três colunas e em seguida verificava que o
+    # DataFrame tinha aquelas três colunas — uma tautologia. Pior: as colunas
+    # eram as da mv_comparador_uf_kpis, view legada que agrupava por
+    # LEFT(cod_municipio, 2) e produzia o bug do "Grupo 71". O teste passava
+    # verde enquanto descrevia um esquema que o projeto tinha abandonado.
+    #
+    # A verificação de verdade é test_mv_kpis_uf_expoe_media_e_mediana, em
+    # tests/test_integracao_mvs.py, que pergunta ao PostgreSQL.
 
     def test_municipios_referencia_schema_real(self):
         """municipios_referencia usa 'codigo' e 'descricao' — NÃO cod_municipio/nome_municipio."""

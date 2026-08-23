@@ -423,22 +423,47 @@ def _filtros_painel(setor_sel: str, cidade_sel: str) -> tuple[str, dict]:
 
 @st.cache_data(ttl=3600)
 def carregar_kpis_painel(setor_sel: str, cidade_sel: str) -> pd.Series:
-    """Contagem, capital total e capital médio do recorte — calculados no banco."""
+    """Contagem, capital total e capital mediano do recorte — apurados no banco.
+
+    Duas decisões estão codificadas aqui:
+
+    1. `capital_sentinela` fica de fora de tudo que soma capital. É a marca dos
+       R$ 999.999.999.999,00 do arquivo da Receita — doze noves, campo
+       preenchido até estourar. Alguns milhares dessas linhas respondiam por
+       dois terços do capital declarado do país.
+
+    2. A métrica de tendência é a MEDIANA, não a média. Capital social é uma
+       distribuição de cauda pesada: a média nacional dava R$ 5,7 milhões, o
+       que descreve as holdings do topo e nenhuma empresa brasileira típica.
+    """
     if setor_sel == "Todos" and cidade_sel == "Todas":
         # Caminho sem filtro: lê da MV, responde em milissegundos.
+        #
+        # Contagem e soma saem da MV. A mediana não sai: mediana não é
+        # somável, e a média das medianas anuais não é a mediana nacional —
+        # foi exatamente esse atalho que produziu os 20,9 anos de
+        # sobrevivência. Ela vem de um percentile_cont sobre a Gold, que é
+        # barato porque só toca o índice parcial de capital positivo.
         sql = text("""
-            SELECT SUM(empresas)                        AS empresas,
-                   SUM(capital_total)                   AS capital_total,
-                   SUM(capital_total) / NULLIF(SUM(empresas), 0) AS capital_medio
-            FROM mv_painel_ano
+            SELECT (SELECT SUM(empresas)      FROM mv_painel_ano) AS empresas,
+                   (SELECT SUM(capital_total) FROM mv_painel_ano) AS capital_total,
+                   (SELECT SUM(sentinelas)    FROM mv_painel_ano) AS sentinelas,
+                   (SELECT percentile_cont(0.50) WITHIN GROUP (ORDER BY capital_social)
+                    FROM empresas_gold
+                    WHERE capital_social > 0 AND NOT capital_sentinela) AS capital_mediano
         """)
         params = {}
     else:
         fragmento, params = _filtros_painel(setor_sel, cidade_sel)
         sql = text(f"""
-            SELECT COUNT(*)                       AS empresas,
-                   COALESCE(SUM(e.capital_social), 0) AS capital_total,
-                   AVG(e.capital_social)          AS capital_medio
+            SELECT COUNT(*)                                       AS empresas,
+                   COALESCE(SUM(e.capital_social)
+                            FILTER (WHERE NOT e.capital_sentinela), 0)
+                                                                  AS capital_total,
+                   COUNT(*) FILTER (WHERE e.capital_sentinela)    AS sentinelas,
+                   percentile_cont(0.50) WITHIN GROUP (ORDER BY e.capital_social)
+                       FILTER (WHERE e.capital_social > 0
+                                 AND NOT e.capital_sentinela)     AS capital_mediano
             {_JOINS_PAINEL} {fragmento}
         """)
     with engine.connect() as conn:
@@ -489,6 +514,9 @@ def carregar_cidades_painel(setor_sel: str, cidade_sel: str) -> pd.DataFrame:
             SELECT COALESCE(m.descricao, e.cod_municipio::text) AS cidade,
                    SUM(e.capital_social)                        AS capital_total
             {_JOINS_PAINEL} {fragmento}
+              -- Mesma exclusão da MV: os valores-sentinela davam 67% do
+              -- capital do país a uma cidade só.
+              AND NOT e.capital_sentinela
             GROUP BY 1
             ORDER BY 2 DESC
             LIMIT 10
@@ -788,18 +816,31 @@ section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] hr {
 
         if total_empresas:
             capital_total = float(kpis["capital_total"] or 0)
-            capital_medio = float(kpis["capital_medio"] or 0)
+            capital_mediano = float(kpis["capital_mediano"] or 0)
+            sentinelas = int(kpis["sentinelas"] or 0)
 
             # KPIs Superiores
             with st.container(border=True):
                 k1, k2, k3 = st.columns(3)
                 k1.metric("🏭 Empresas Identificadas", f"{total_empresas:,}".replace(",", "."))
                 k2.metric("💰 Capital Total", f"R$ {capital_total:,.2f}")
-                k3.metric("📐 Média de Capital", f"R$ {capital_medio:,.2f}")
-            st.caption(
+                k3.metric("📐 Capital Mediano", f"R$ {capital_mediano:,.2f}")
+
+            legenda = (
                 "Recorte inteiro da base, com capital social maior que zero — "
-                "não uma amostra."
+                "não uma amostra. **Mediana, não média**: capital social tem "
+                "cauda pesadíssima, e a média nacional (R$ 5,7 milhões) "
+                "descreve as holdings do topo, não a empresa brasileira típica."
             )
+            if sentinelas:
+                legenda += (
+                    f"\n\nExcluídas {sentinelas:,} empresas".replace(",", ".")
+                    + " com capital de R$ 999.999.999.999,00 — doze noves, o "
+                    "teto do campo. Não é capital, é preenchimento, e sozinho "
+                    "respondia por dois terços do valor declarado do país. As "
+                    "empresas continuam contadas; apenas o valor sai da soma."
+                )
+            st.caption(legenda)
 
             st.divider()
 
@@ -842,6 +883,11 @@ section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] hr {
                 LEFT JOIN cnaes_referencia      c ON e.cnae_fiscal   = c.codigo
                 LEFT JOIN municipios_referencia m ON e.cod_municipio = m.codigo
                 WHERE e.capital_social > 0
+                  -- Sem este filtro o ranking era uma lista de holdings com
+                  -- R$ 999.999.999.999,00 — o mesmo número repetido dezenas de
+                  -- vezes, todas na mesma cidade. Ordenar por capital coloca o
+                  -- preenchimento no topo antes de qualquer empresa real.
+                  AND NOT e.capital_sentinela
             """
             params_rank: dict = {}
             if setor_sel != "Todos":
@@ -1408,7 +1454,14 @@ section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] hr {
                         "MEI é lido antes de Simples: todo MEI é optante do Simples, "
                         "então sem essa precedência o recorte MEI desapareceria "
                         "dentro do Simples. 'Não informado' (empresa ausente do "
-                        "Simples.zip) fica de fora do gráfico."
+                        "Simples.zip) fica de fora do gráfico.\n\n"
+                        "**O regime vem do histórico, não do cadastro de hoje.** "
+                        "A Receita marca como optante do MEI apenas quem está "
+                        "no regime agora — quem fechou saiu do registro. "
+                        "Classificar por essa marca montaria um grupo \"MEI\" "
+                        "só de empresas vivas, e a sobrevivência daria 100% por "
+                        "construção. Esta tela usa a data de adesão, que a "
+                        "Receita preserva depois da baixa."
                     )
                 except Exception as e_reg:
                     st.error(f"❌ Erro no regime tributário: {e_reg}")
@@ -1534,7 +1587,16 @@ section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] hr {
                             "composto de empresas jovens, enquanto o regime normal "
                             "carrega companhias que tiveram décadas para se consolidar. "
                             "Fixando a safra, as três curvas partem do mesmo ponto no "
-                            "tempo e a diferença que sobra é do regime, não da idade."
+                            "tempo e a diferença que sobra é do regime, não da idade.\n\n"
+                            "Este gráfico já esteve errado, e vale contar como: ele "
+                            "exibiu MEI e Simples parados em **100,0%** aos 5 anos "
+                            "contra 48% do regime normal. Não era achado, era "
+                            "tautologia — o recorte usava a marca de optante ATUAL, "
+                            "que só sobrevivente carrega. Segmentar o passado por um "
+                            "atributo do presente condiciona na sobrevivência. É o "
+                            "mesmo erro dos 44,5 anos, com outra roupa, e agora tem "
+                            "um portão de qualidade e dois testes de regressão em "
+                            "cima dele."
                         )
             except Exception as e_cr:
                 st.error(f"❌ Erro na comparação por regime: {e_cr}")

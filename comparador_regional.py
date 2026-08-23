@@ -7,8 +7,8 @@ Página do dashboard — Demografia Empresarial Brasil
 Lógica:
 - Usuário seleciona 2 a 4 regiões (UF ou Município)
 - Dashboard gera painel comparativo lado a lado com 4 blocos:
-  1. KPI Cards   → total empresas, capital médio, % ativas
-  2. Bar Chart   → capital médio comparativo
+  1. KPI Cards   → total empresas, capital mediano, % ativas
+  2. Bar Chart   → capital mediano comparativo
   3. Heatmap     → distribuição percentual por setor (top 8 CNAEs)
   4. Line Chart  → crescimento de aberturas ao longo do tempo
 
@@ -130,14 +130,20 @@ def _carregar_municipios_top(limite: int = 100) -> pd.DataFrame:
 @st.cache_data(ttl=1800)
 def _kpis_por_uf(ufs: tuple[str, ...]) -> pd.DataFrame:
     """
-    KPIs agregados por UF: total_empresas | capital_medio | pct_ativas
+    KPIs agregados por UF: total_empresas | capital_mediano | pct_ativas
 
     Lê de mv_kpis_uf, pré-agregada sobre a coluna uf real. A % de ativas só
     existe agora porque situacao_cadastral entrou na Gold nesta reconstrução —
     a docstring do módulo prometia esse KPI desde o início e ele nunca aparecia.
+
+    O KPI de capital é a MEDIANA. A média vinha de mv_kpis_uf com os
+    valores-sentinela dentro (R$ 999.999.999.999,00) e dava R$ 12,4 milhões
+    para São Paulo — número que não descreve empresa nenhuma. A MV ainda expõe
+    capital_medio, agora já sem os sentinelas, para quem quiser comparar as
+    duas; o comparador exibe a mediana.
     """
     sql = text("""
-        SELECT uf AS sigla_uf, total_empresas, capital_medio, pct_ativas
+        SELECT uf AS sigla_uf, total_empresas, capital_mediano, pct_ativas
         FROM mv_kpis_uf
         WHERE uf = ANY(:ufs)
     """)
@@ -153,10 +159,15 @@ def _kpis_por_municipio(cod_municipios: tuple[int, ...]) -> pd.DataFrame:
             eg.cod_municipio,
             COALESCE(mr.descricao, eg.cod_municipio::text) AS nome_municipio,
             COUNT(*)                                            AS total_empresas,
+            -- Mediana e sem valores-sentinela, pelos mesmos dois motivos de
+            -- _kpis_por_uf: capital social é cauda pesada, e o arquivo da
+            -- Receita traz milhares de campos preenchidos com doze noves.
             ROUND(
-                AVG(eg.capital_social) FILTER (WHERE eg.capital_social > 0)::numeric,
+                PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY eg.capital_social)
+                FILTER (WHERE eg.capital_social > 0
+                          AND NOT eg.capital_sentinela)::numeric,
                 2
-            )                                                   AS capital_medio
+            )                                                   AS capital_mediano
         FROM empresas_gold eg
         LEFT JOIN municipios_referencia mr ON mr.codigo = eg.cod_municipio
         WHERE eg.cod_municipio = ANY(:municipios)
@@ -326,7 +337,7 @@ def _render_kpi_cards(df_kpi: pd.DataFrame, col_regiao: str, cores: dict) -> Non
             total = "—"
 
         try:
-            capital_val = float(row.capital_medio) if pd.notna(row.capital_medio) else None
+            capital_val = float(row.capital_mediano) if pd.notna(row.capital_mediano) else None
             capital = (
                 f"R$ {capital_val:,.0f}".replace(",", "X").replace(".", ",").replace("X", ".")
                 if capital_val is not None else "—"
@@ -342,7 +353,7 @@ def _render_kpi_cards(df_kpi: pd.DataFrame, col_regiao: str, cores: dict) -> Non
                 unsafe_allow_html=True,
             )
             st.metric(label="🏢 Total de empresas", value=total)
-            st.metric(label="💰 Capital médio", value=capital)
+            st.metric(label="💰 Capital mediano", value=capital)
             # pct_ativas só existe no modo UF (vem de mv_kpis_uf).
             pct = getattr(row, "pct_ativas", None)
             if pct is not None and pd.notna(pct):
@@ -351,20 +362,31 @@ def _render_kpi_cards(df_kpi: pd.DataFrame, col_regiao: str, cores: dict) -> Non
 
 
 def _render_bar_capital(df_kpi: pd.DataFrame, col_regiao: str, cores: dict[str, str]) -> None:
-    """Bar chart horizontal comparando capital médio entre regiões."""
-    df_plot = df_kpi[[col_regiao, "capital_medio"]].dropna(subset=["capital_medio"])
-    df_plot = df_plot.sort_values("capital_medio", ascending=True)
+    """Bar chart horizontal comparando capital MEDIANO entre regiões."""
+    df_plot = df_kpi[[col_regiao, "capital_mediano"]].dropna(subset=["capital_mediano"])
+    df_plot = df_plot.sort_values("capital_mediano", ascending=True)
 
     fig = go.Figure(go.Bar(
-        x=df_plot["capital_medio"],
+        x=df_plot["capital_mediano"],
         y=df_plot[col_regiao],
         orientation="h",
         marker_color=[cores.get(r, PALETA[0]) for r in df_plot[col_regiao]],
-        text=df_plot["capital_medio"].map(lambda v: f"R$ {v:,.0f}"),
+        # Separadores brasileiros. O f-string devolve "12,395,114" no padrão
+        # americano; a troca em duas etapas evita reescrever um separador já
+        # trocado.
+        text=df_plot["capital_mediano"].map(
+            lambda v: "R$ " + f"{v:,.0f}".replace(",", "@").replace(".", ",")
+                                          .replace("@", ".")
+        ),
         textposition="outside",
+        # Sem isto o Plotly abrevia o rótulo quando a barra fica estreita, e
+        # "R$ 12.395.114" era exibido como "R$ 12,3" — número diferente do que
+        # o card de KPI logo acima mostrava, na mesma tela.
+        cliponaxis=False,
+        constraintext="none",
     ))
     fig.update_layout(
-        title="Capital Social Médio (R$)",
+        title="Capital Social Mediano (R$)",
         xaxis_title="",
         yaxis_title="",
         plot_bgcolor="rgba(0,0,0,0)",
@@ -463,7 +485,7 @@ def render_comparador() -> None:
     st.title("🗺️ Comparador Regional")
     st.caption(
         "Compare perfis empresariais entre estados (UF) ou municípios — "
-        "capital médio, taxa de atividade, setores dominantes e crescimento histórico."
+        "capital mediano, taxa de atividade, setores dominantes e crescimento histórico."
     )
     st.divider()
 
@@ -567,12 +589,12 @@ def render_comparador() -> None:
     st.divider()
 
     # ------------------------------------------------------------------
-    # Bloco 2 — Capital Médio + Heatmap Setores (lado a lado)
+    # Bloco 2 — Capital Mediano + Heatmap Setores (lado a lado)
     # ------------------------------------------------------------------
     col_bar, col_heat = st.columns([1, 2])
 
     with col_bar:
-        st.subheader("💰 Capital Médio")
+        st.subheader("💰 Capital Mediano")
         _render_bar_capital(df_kpi, col_kpi_regiao, cores)
 
     with col_heat:

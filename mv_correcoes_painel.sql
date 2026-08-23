@@ -60,8 +60,16 @@ CREATE MATERIALIZED VIEW mv_kpis_uf AS
 SELECT
     uf,
     count(*)                                                             AS total_empresas,
-    round(avg(capital_social) FILTER (WHERE capital_social > 0)::numeric,
+    -- Média e mediana lado a lado, ambas sem os valores-sentinela. O
+    -- comparador exibe a MEDIANA: a média de capital social é dominada pelas
+    -- poucas empresas do topo e diz mais sobre onde estão as holdings do que
+    -- sobre o porte típico do estado.
+    round(avg(capital_social) FILTER
+          (WHERE capital_social > 0 AND NOT capital_sentinela)::numeric,
           2)                                                             AS capital_medio,
+    round(percentile_cont(0.50) WITHIN GROUP (ORDER BY capital_social) FILTER
+          (WHERE capital_social > 0 AND NOT capital_sentinela)::numeric,
+          2)                                                             AS capital_mediano,
     round(100.0 * count(*) FILTER (WHERE situacao_cadastral = 2)
           / count(*), 2)                                                 AS pct_ativas
 FROM empresas_gold
@@ -103,11 +111,26 @@ CREATE UNIQUE INDEX uidx_mv_crescimento_uf ON mv_crescimento_uf (uf, ano);
 -- ---------------------------------------------------------------------------
 DROP MATERIALIZED VIEW IF EXISTS mv_painel_ano;
 
+-- `FILTER (WHERE NOT capital_sentinela)` exclui os R$ 999.999.999.999,00 do
+-- arquivo da Receita — doze noves, campo preenchido até estourar. Alguns
+-- milhares dessas linhas respondiam por dois terços do capital declarado do
+-- país: davam 67% do capital nacional a uma única cidade no donut e punham a
+-- média de capital na casa dos milhões.
+--
+-- A empresa continua contada em `empresas`. O que sai da conta é o valor.
 CREATE MATERIALIZED VIEW mv_painel_ano AS
 SELECT
-    EXTRACT(YEAR FROM data_abertura)::int AS ano,
-    count(*)                              AS empresas,
-    sum(capital_social)                   AS capital_total
+    EXTRACT(YEAR FROM data_abertura)::int                    AS ano,
+    count(*)                                                 AS empresas,
+    COALESCE(sum(capital_social)
+             FILTER (WHERE NOT capital_sentinela), 0)        AS capital_total,
+    count(*) FILTER (WHERE NOT capital_sentinela)            AS empresas_com_capital,
+    -- Mediana, não média. Capital social tem cauda pesadíssima: a média
+    -- descreve o topo da distribuição, não o país. A mesma decisão já valia
+    -- para mv_capital_ano_municipio; aqui ela vira a métrica do painel.
+    round(percentile_cont(0.50) WITHIN GROUP (ORDER BY capital_social)
+          FILTER (WHERE NOT capital_sentinela)::numeric, 2)  AS capital_mediano,
+    count(*) FILTER (WHERE capital_sentinela)                AS sentinelas
 FROM empresas_gold
 WHERE capital_social > 0
   AND data_abertura IS NOT NULL
@@ -120,9 +143,11 @@ DROP MATERIALIZED VIEW IF EXISTS mv_painel_cidade;
 
 CREATE MATERIALIZED VIEW mv_painel_cidade AS
 SELECT
-    COALESCE(m.descricao, e.cod_municipio::text) AS cidade,
-    count(*)                                     AS empresas,
-    sum(e.capital_social)                        AS capital_total
+    COALESCE(m.descricao, e.cod_municipio::text)             AS cidade,
+    count(*)                                                 AS empresas,
+    COALESCE(sum(e.capital_social)
+             FILTER (WHERE NOT e.capital_sentinela), 0)      AS capital_total,
+    count(*) FILTER (WHERE e.capital_sentinela)              AS sentinelas
 FROM empresas_gold e
 LEFT JOIN municipios_referencia m ON m.codigo = e.cod_municipio
 WHERE e.capital_social > 0

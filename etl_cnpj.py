@@ -388,6 +388,27 @@ def recriar_dependentes(cur, capturado):
     log(f"  {len(indices)} índices restaurados")
 
 
+# Capital social acima deste valor não é capital: é campo preenchido.
+#
+# A base real traz milhares de empresas com exatamente R$ 999.999.999.999,00 —
+# doze noves, o teto de um campo de 12 dígitos. Elas apareciam no topo de
+# "Maiores Empresas", davam a uma única cidade 67% do capital do país e
+# empurravam a média nacional de capital para a casa dos milhões.
+#
+# Para calibrar: a maior capitalização social legítima do Brasil está na ordem
+# de R$ 200 bilhões (Petrobras). R$ 500 bilhões é mais que o dobro disso e
+# ainda assim fica abaixo dos doze noves — o corte pega o preenchimento sem
+# encostar em nenhuma empresa real.
+#
+# O primeiro valor escrito aqui foi R$ 1 trilhão, e ele não pegava nada:
+# 999.999.999.999 é exatamente um centavo MENOR que um trilhão. Um limiar
+# redondo escolhido "com folga" em cima de um sentinela que é o teto de um
+# campo passa por baixo dele. A folga tem que ficar do lado de dentro.
+#
+# A linha NÃO é excluída da Gold — a empresa existe e conta em toda análise que
+# não seja de capital. O que se marca é que o VALOR do capital é inutilizável.
+LIMIAR_CAPITAL_SENTINELA = 500_000_000_000
+
 SQL_GOLD = """
 DROP TABLE IF EXISTS empresas_gold CASCADE;
 
@@ -397,6 +418,10 @@ SELECT
     e.razao_social,
     NULLIF(e.natureza_juridica, '')::bigint                       AS natureza_juridica,
     COALESCE(replace(e.capital_social, ',', '.')::numeric, 0)     AS capital_social,
+    -- Ver LIMIAR_CAPITAL_SENTINELA acima. Marca o valor como inutilizável sem
+    -- apagá-lo e sem remover a empresa.
+    (COALESCE(replace(e.capital_social, ',', '.')::numeric, 0)
+        >= %LIMIAR%::numeric)                                     AS capital_sentinela,
     to_date(NULLIF(st.data_inicio_atividade, '0'), 'YYYYMMDD')    AS data_abertura,
     NULLIF(st.cnae_fiscal, '')::bigint                            AS cnae_fiscal,
     NULLIF(st.municipio, '')::bigint                              AS cod_municipio,
@@ -406,8 +431,29 @@ SELECT
     NULLIF(st.motivo_situacao, '')::int                           AS motivo_situacao,
     -- 'S'/'N' da Receita viram booleano; ausência no Simples.zip vira NULL
     -- (a empresa nunca foi avaliada), que é diferente de 'N' (avaliada e fora).
+    --
+    -- ATENÇÃO: estas duas colunas são o status de HOJE. Uma empresa que fechou
+    -- deixa de ser optante, então `opcao_mei = true` seleciona, na prática,
+    -- empresas vivas. Use-as para "quantos MEIs existem hoje" e NUNCA para
+    -- segmentar sobrevivência — veja foi_simples/foi_mei logo abaixo.
     CASE si.opcao_simples WHEN 'S' THEN true WHEN 'N' THEN false END AS opcao_simples,
     CASE si.opcao_mei     WHEN 'S' THEN true WHEN 'N' THEN false END AS opcao_mei,
+    -- Já foi optante ALGUM DIA. É o que a Receita guarda em data_opcao_*: a
+    -- data de adesão continua preenchida depois da exclusão e depois da baixa.
+    --
+    -- Esta distinção não é preciosismo. O dashboard chegou a exibir uma curva
+    -- de sobrevivência do MEI parada em 100,0% aos 5 anos, contra 48% do regime
+    -- normal — o que parecia um achado espetacular e era só tautologia: o
+    -- grupo tinha sido definido por uma condição que exige estar vivo.
+    -- Segmentar o passado por um atributo do presente condiciona na
+    -- sobrevivência. É o mesmo erro dos 44,5 anos, com outra roupa.
+    --
+    -- NULL quando a empresa não consta do arquivo do Simples: "nunca aderiu" e
+    -- "não sabemos" são coisas diferentes e não devem virar o mesmo `false`.
+    CASE WHEN si.cnpj_basico IS NULL THEN NULL
+         ELSE si.data_opcao_simples IS NOT NULL END               AS foi_simples,
+    CASE WHEN si.cnpj_basico IS NULL THEN NULL
+         ELSE si.data_opcao_mei IS NOT NULL END                   AS foi_mei,
     -- Sócios entram só como CONTAGEM. Nome e CPF ficam na bronze.
     -- 0 não é ausência de dado: empresário individual e MEI legitimamente não
     -- têm registro de sócio no arquivo da Receita.
@@ -438,9 +484,15 @@ LEFT JOIN (
     -- Sem isso, uma única linha repetida multiplicaria a empresa na Gold e
     -- derrubaria a PRIMARY KEY lá embaixo — falha barulhenta, mas depois de
     -- 40 minutos de join.
+    --
+    -- '0' e '' são as duas formas de "sem data" no arquivo da Receita; ambas
+    -- viram NULL aqui para que `IS NOT NULL` lá em cima signifique mesmo
+    -- "aderiu em algum momento".
     SELECT lpad(cnpj_basico, 8, '0')   AS cnpj_basico,
            max(NULLIF(opcao_simples, '')) AS opcao_simples,
-           max(NULLIF(opcao_mei, ''))     AS opcao_mei
+           max(NULLIF(opcao_mei, ''))     AS opcao_mei,
+           max(NULLIF(NULLIF(data_opcao_simples, ''), '0')) AS data_opcao_simples,
+           max(NULLIF(NULLIF(data_opcao_mei, ''), '0'))     AS data_opcao_mei
     FROM bronze_simples
     GROUP BY 1
 ) si USING (cnpj_basico)
@@ -514,10 +566,73 @@ CHECKS = [
      "SELECT round(100.0 * count(*) FILTER (WHERE qtd_socios > 0) "
      "/ NULLIF(count(*), 0), 1) FROM empresas_gold",
      lambda v, ctx: v is not None and v > 10),
+
+    # Portão que teria pego a curva do MEI parada em 100%.
+    #
+    # Todo regime tributário relevante tem que conter empresas que fecharam. Se
+    # um deles vier com quase nenhuma baixada, o recorte não está medindo
+    # regime: está medindo estar vivo. Mede-se o PIOR regime — basta um cair
+    # abaixo do piso para a carga parar.
+    ("Menor taxa de baixadas entre os regimes",
+     """SELECT min(pct) FROM (
+            SELECT round(100.0 * count(*) FILTER (WHERE situacao_cadastral = 8)
+                         / NULLIF(count(*), 0), 2) AS pct
+            FROM empresas_gold
+            WHERE foi_simples IS NOT NULL
+            GROUP BY CASE WHEN foi_mei THEN 'MEI'
+                          WHEN foi_simples THEN 'Simples'
+                          ELSE 'Normal' END
+            HAVING count(*) > 100000
+        ) t""",
+     lambda v, ctx: v is not None and v > 1),
+
+    # Guarda o LIMIAR contra si mesmo.
+    #
+    # O risco aqui não é deixar sentinela passar — é o limiar descer e começar
+    # a marcar empresa de verdade. Os valores-sentinela são um punhado de
+    # linhas: se mais de 0,1% da base cair na marca, o corte está apagando
+    # capital legítimo, e isso é pior que o problema original.
+    #
+    # (A FATIA DO CAPITAL que eles representam é outra coisa e é enorme —
+    # ~67% do capital declarado do país. Esse número não é uma falha, é o
+    # achado; ele aparece no log logo abaixo, sem portão.)
+    ("Empresas marcadas como capital-sentinela (%)",
+     "SELECT round(100.0 * count(*) FILTER (WHERE capital_sentinela) "
+     "/ NULLIF(count(*), 0), 4) FROM empresas_gold",
+     lambda v, ctx: v is not None and v < 0.1),
+]
+
+
+# Números que valem a pena imprimir, mas que não são critério de aprovação.
+# Descrevem a base; não dizem se a carga está boa.
+INFORMATIVOS = [
+    ("Fatia do capital declarado em valores-sentinela (%)",
+     "SELECT round(100.0 * COALESCE(sum(capital_social) "
+     "FILTER (WHERE capital_sentinela), 0) / NULLIF(sum(capital_social), 0), 1) "
+     "FROM empresas_gold"),
+
+    ("Capital mediano nacional (R$)",
+     "SELECT round(percentile_cont(0.50) WITHIN GROUP (ORDER BY capital_social)"
+     "::numeric, 2) FROM empresas_gold "
+     "WHERE capital_social > 0 AND NOT capital_sentinela"),
+
+    ("Empresas que já foram MEI",
+     "SELECT count(*) FROM empresas_gold WHERE foi_mei"),
+
+    ("Delas, quantas já fecharam",
+     "SELECT count(*) FROM empresas_gold "
+     "WHERE foi_mei AND situacao_cadastral = 8"),
 ]
 
 
 def rodar_checks(cur):
+    log("Números da base (informativos)")
+    for rotulo, sql in INFORMATIVOS:
+        cur.execute(sql)
+        valor = cur.fetchone()[0]
+        log(f"  {rotulo}: {valor:,}" if isinstance(valor, int)
+            else f"  {rotulo}: {valor}")
+
     log("Portões de qualidade")
     falhas = []
     for rotulo, sql, ok in CHECKS:
@@ -622,7 +737,11 @@ def main():
             dependentes = capturar_dependentes(cur)
 
             log("Construindo empresas_gold (join no Postgres)")
-            cur.execute(SQL_GOLD)
+            # .replace em vez de .format: o SQL contém '^[0-9]{8}$', e chaves
+            # literais quebrariam qualquer formatação por chaves.
+            cur.execute(
+                SQL_GOLD.replace("%LIMIAR%", str(LIMIAR_CAPITAL_SENTINELA))
+            )
 
             rodar_checks(cur)
 
@@ -640,8 +759,11 @@ def main():
             cur.execute("""
                 CREATE INDEX idx_eg_capital_positivo ON empresas_gold
                     (capital_social DESC, cnae_fiscal, cod_municipio)
-                    WHERE capital_social > 0
+                    WHERE capital_social > 0 AND NOT capital_sentinela
             """)
+            # Regime: a comparação por safra filtra por foi_mei/foi_simples.
+            cur.execute("CREATE INDEX idx_eg_regime ON empresas_gold "
+                        "(foi_mei, foi_simples)")
             cur.execute("ANALYZE empresas_gold")
 
             recriar_dependentes(cur, dependentes)

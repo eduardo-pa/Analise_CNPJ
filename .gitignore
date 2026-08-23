@@ -82,3 +82,20 @@ CLAUDE.md
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# =============================================================
+#  Scripts de rascunho e artefatos gerados
+# =============================================================
+# Consultas de uma linha escritas para inspecionar o banco durante o
+# desenvolvimento. Ficam na máquina; não descrevem o projeto.
+ver_colunas.py
+ver_mv_crescimento.py
+checar_mvs.py
+diagnostico_schema.py
+criar_mv_comparador.py
+gerar_carrossel.py
+
+# Dump do catálogo do PostgreSQL, reescrito pelo etl_cnpj.py a cada carga.
+# A definição de verdade das views está nos arquivos mv_*.sql versionados;
+# manter este aqui só produzia diff a cada execução do ETL.
+views_materializadas.sql

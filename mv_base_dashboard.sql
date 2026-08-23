@@ -53,7 +53,11 @@ CREATE MATERIALIZED VIEW mv_treemap_setores AS
 SELECT
     LEFT(cnae_fiscal::text, 2)  AS divisao_cnae,
     count(*)                    AS total_empresas,
-    sum(capital_social)         AS capital_total
+    -- Sem os valores-sentinela: umas poucas holdings com capital preenchido
+    -- com doze noves inflavam a divisão 64 (atividades financeiras) e
+    -- deformavam o treemap inteiro.
+    COALESCE(sum(capital_social)
+             FILTER (WHERE NOT capital_sentinela), 0) AS capital_total
 FROM empresas_gold
 WHERE capital_social >= 0
   AND cnae_fiscal IS NOT NULL

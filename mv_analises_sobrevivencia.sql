@@ -198,6 +198,9 @@ SELECT
 FROM empresas_gold e
 LEFT JOIN municipios_referencia m ON m.codigo = e.cod_municipio
 WHERE e.capital_social > 0
+  -- Fora os R$ 999.999.999.999,00 de preenchimento do arquivo da Receita. A
+  -- mediana já era quase imune a eles; a média não era nem um pouco.
+  AND NOT e.capital_sentinela
   AND e.cod_municipio IS NOT NULL
   AND e.data_abertura >= DATE '2005-01-01'
 GROUP BY 1, 2

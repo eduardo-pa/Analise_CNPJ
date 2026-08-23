@@ -230,3 +230,172 @@ def test_faixas_de_socios_cobrem_a_base(cur):
     das_faixas = cur.fetchone()[0]
     cur.execute("SELECT count(*) FROM empresas_gold")
     assert das_faixas == cur.fetchone()[0]
+
+
+# ---------------------------------------------------------------------------
+# Regime tributário — o bug da curva de 100%
+# ---------------------------------------------------------------------------
+
+def test_nenhum_regime_tem_sobrevivencia_perfeita(cur):
+    """REGRESSÃO da curva do MEI parada em 100,0%.
+
+    O dashboard exibiu MEI e Simples Nacional com 100,0% de sobrevivência aos
+    5 anos contra 48% do regime normal. Parecia um achado extraordinário e era
+    tautologia: as views classificavam o regime por `opcao_mei`, que é o status
+    ATUAL no registro do Simples. Quem fecha sai do registro, então o grupo
+    "MEI" continha apenas empresas vivas e a sobrevivência dava 100% por
+    construção.
+
+    Todo regime relevante tem que conter empresas que fecharam. Se algum vier
+    com quase nenhuma baixada, alguém trocou foi_mei por opcao_mei de novo.
+    """
+    cur.execute("""
+        SELECT regime, total_empresas, baixadas_medidas
+        FROM mv_sobrevivencia_regime
+        WHERE total_empresas > 1000
+          AND 100.0 * baixadas_medidas / total_empresas < 1
+    """)
+    assert cur.fetchall() == [], (
+        "regime sem baixadas — a classificação está usando status atual"
+    )
+
+
+def test_regime_nao_e_classificado_por_status_atual(cur):
+    """O contrapositivo do teste acima, direto na Gold.
+
+    Prova que `opcao_mei` de fato correlaciona com estar vivo — ou seja, que a
+    armadilha existe nesta base — e que `foi_mei` não correlaciona. Se um dia a
+    Receita passar a manter os baixados no registro, este teste avisa que a
+    premissa mudou em vez de deixar a distinção virar folclore no código.
+    """
+    cur.execute("""
+        SELECT
+            round(100.0 * count(*) FILTER
+                  (WHERE opcao_mei AND situacao_cadastral = 8)
+                  / NULLIF(count(*) FILTER (WHERE opcao_mei), 0), 2) AS pct_atual,
+            round(100.0 * count(*) FILTER
+                  (WHERE foi_mei AND situacao_cadastral = 8)
+                  / NULLIF(count(*) FILTER (WHERE foi_mei), 0), 2)   AS pct_historico
+        FROM empresas_gold
+    """)
+    pct_atual, pct_historico = cur.fetchone()
+
+    assert pct_historico > 5, (
+        f"apenas {pct_historico}% de quem já foi MEI aparece como baixada — "
+        "o histórico não está sendo capturado"
+    )
+    assert pct_historico > pct_atual, (
+        "status atual e histórico dão o mesmo resultado; se a fonte mudou, "
+        "atualize o comentário em etl_cnpj.py antes de relaxar este teste"
+    )
+
+
+def test_coorte_regime_usa_as_mesmas_colunas(cur):
+    """As duas views de regime têm que concordar sobre quem é MEI.
+
+    mv_sobrevivencia_regime e mv_coorte_regime repetem o mesmo CASE. Repetição
+    assim é onde uma correção chega pela metade: arruma-se uma view, esquece-se
+    a outra, e o dashboard passa a exibir dois números diferentes para a mesma
+    pergunta em telas vizinhas.
+    """
+    cur.execute("""
+        SELECT sum(qtd) FROM mv_coorte_regime
+        WHERE regime = 'MEI' AND coorte >= 2009
+    """)
+    da_coorte = cur.fetchone()[0] or 0
+
+    cur.execute("""
+        SELECT count(*) FROM empresas_gold
+        WHERE foi_mei AND data_abertura >= DATE '2009-01-01'
+    """)
+    da_gold = cur.fetchone()[0]
+
+    assert da_coorte == da_gold, (
+        f"mv_coorte_regime conta {da_coorte:,} MEIs; a Gold tem {da_gold:,}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Capital social — o bug dos doze noves
+# ---------------------------------------------------------------------------
+
+def test_limiar_de_sentinela_nao_pega_empresa_real(cur):
+    """O corte de capital não pode estar apagando empresa de verdade.
+
+    Os valores-sentinela são um punhado de linhas. Se o limiar descer e passar
+    a marcar 1% da base, ele deixou de remover preenchimento e começou a
+    remover capital legítimo — que é pior que o problema original.
+    """
+    cur.execute("""
+        SELECT round(100.0 * count(*) FILTER (WHERE capital_sentinela)
+               / NULLIF(count(*), 0), 4) FROM empresas_gold
+    """)
+    assert cur.fetchone()[0] < 1.0
+
+
+def test_nenhuma_mv_de_capital_soma_sentinela(cur):
+    """REGRESSÃO do ranking de holdings com R$ 999.999.999.999,00.
+
+    Um único FILTER esquecido em qualquer view de capital devolve o donut com
+    67% para uma cidade só. Aqui a checagem é indireta e robusta: o maior
+    capital total por cidade não pode encostar na ordem de grandeza que só um
+    sentinela alcança.
+    """
+    cur.execute("SELECT max(capital_total) FROM mv_painel_cidade")
+    maior_cidade = float(cur.fetchone()[0] or 0)
+
+    cur.execute("""
+        SELECT COALESCE(sum(capital_social), 0) FROM empresas_gold
+        WHERE capital_social > 0 AND NOT capital_sentinela
+    """)
+    capital_real = float(cur.fetchone()[0] or 0)
+
+    assert maior_cidade <= capital_real, (
+        "uma cidade sozinha soma mais capital do que existe sem os sentinelas"
+    )
+
+    cur.execute("SELECT max(capital_total) FROM mv_treemap_setores")
+    assert float(cur.fetchone()[0] or 0) <= capital_real
+
+
+def test_mv_kpis_uf_expoe_media_e_mediana(cur):
+    """O comparador lê capital_mediano de mv_kpis_uf.
+
+    Substitui um teste que montava um DataFrame e conferia as colunas dele
+    mesmo. Este pergunta ao PostgreSQL, e quebra se a MV mudar de forma.
+    """
+    # information_schema.columns NÃO enxerga view materializada — ela lista
+    # tabelas e views comuns. Uma consulta ali devolveria conjunto vazio e o
+    # teste falharia sem que nada estivesse errado. As colunas de uma MV estão
+    # no catálogo interno.
+    cur.execute("""
+        SELECT attname FROM pg_attribute
+        WHERE attrelid = 'mv_kpis_uf'::regclass AND attnum > 0 AND NOT attisdropped
+    """)
+    colunas = {r[0] for r in cur.fetchall()}
+    assert {"uf", "total_empresas", "capital_medio",
+            "capital_mediano", "pct_ativas"} <= colunas
+
+    cur.execute("SELECT count(*) FROM mv_kpis_uf WHERE capital_mediano > capital_medio")
+    assert cur.fetchone()[0] == 0, (
+        "mediana acima da média em alguma UF — capital social é assimétrico "
+        "à direita, então isso indica colunas trocadas"
+    )
+
+
+def test_painel_ano_reporta_a_mediana(cur):
+    """A métrica de tendência do painel é mediana, não média.
+
+    Capital social é cauda pesada: a média nacional dava R$ 5,7 milhões, valor
+    que não descreve empresa brasileira nenhuma. A mediana tem que ser
+    materialmente menor — se as duas convergirem, ou a coluna virou média de
+    novo, ou a distribuição mudou de natureza.
+    """
+    cur.execute("""
+        SELECT max(capital_mediano),
+               max(capital_total / NULLIF(empresas_com_capital, 0))
+        FROM mv_painel_ano
+    """)
+    mediana, media = cur.fetchone()
+    assert mediana is not None and float(mediana) > 0
+    assert float(mediana) < float(media)
