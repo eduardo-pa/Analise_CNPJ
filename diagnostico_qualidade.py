@@ -37,6 +37,15 @@ from database import engine
 
 LARGURA = 78
 
+# Uma data de verdade no arquivo da Receita: oito dígitos que não são todos
+# zero. As formas de "sem data" que aparecem no conjunto são '', '0' e
+# '00000000' — e é a última que derruba a checagem ingênua, porque não é vazia,
+# não é o texto '0', e ainda assim não é data nenhuma.
+#
+# `{col}` é substituído pelo nome da coluna. É interpolação de identificador em
+# constante literal deste módulo, não de entrada externa.
+DATA_REAL = "(CASE WHEN {col} ~ '^[0-9]{{8}}$' AND {col} !~ '^0+$' THEN {col} END)"
+
 
 def titulo(txt: str) -> None:
     print()
@@ -98,11 +107,30 @@ def checar_regime(conn) -> bool:
         print("  >> Não confirmado por esta via. Veja [b] e [c] antes de concluir.")
 
     if not existe(conn, "bronze_simples"):
-        print("\n  bronze_simples não existe nesta base — pulando [b] e [c].")
+        print("\n  bronze_simples não existe nesta base — pulando [b] a [d].")
         print("  (Rode o ETL sem CNPJ_SKIP_BRONZE para tê-la.)")
         return bool(suspeito)
 
-    print("\n  [b] Quem está no arquivo do Simples, por situação da empresa\n")
+    print("\n  [b] Que formas de 'data' o arquivo do Simples usa\n")
+    for coluna in ("data_opcao_mei", "data_opcao_simples"):
+        linhas = tabela(conn, f"""
+            SELECT
+                CASE WHEN {coluna} IS NULL          THEN '(NULL)'
+                     WHEN {coluna} = ''             THEN '(vazio)'
+                     WHEN {coluna} ~ '^0+$'         THEN
+                          '(so zeros, ' || length({coluna}) || ' caracteres)'
+                     WHEN {coluna} ~ '^[0-9]{{8}}$' THEN 'data YYYYMMDD'
+                     ELSE '(outro: ' || left({coluna}, 12) || ')' END AS forma,
+                count(*) AS qtd
+            FROM bronze_simples
+            GROUP BY 1 ORDER BY 2 DESC LIMIT 6
+        """)
+        print(f"  {coluna}")
+        for forma, qtd in linhas:
+            print(f"      {forma:<36}{qtd:>14,}")
+        print()
+
+    print("  [c] Quem está no arquivo do Simples, por situação da empresa\n")
     linhas = tabela(conn, """
         SELECT
             CASE g.situacao_cadastral WHEN 2 THEN 'Ativa'
@@ -112,14 +140,20 @@ def checar_regime(conn) -> bool:
             count(*)                                            AS empresas,
             count(s.cnpj_basico)                                AS no_arquivo,
             count(*) FILTER (WHERE s.opcao_mei = 'S')           AS mei_hoje,
-            count(*) FILTER (WHERE s.data_opcao_mei IS NOT NULL
-                               AND s.data_opcao_mei NOT IN ('', '0'))
-                                                                AS ja_foi_mei
+            count(s.data_opcao_mei)                             AS ja_foi_mei
         FROM empresas_gold g
         LEFT JOIN (
+            -- A regra de "data de verdade" é DATA_REAL, definida abaixo.
+            --
+            -- A primeira versão desta consulta usava NOT IN ('', '0') e devolveu
+            -- "já foi MEI" exatamente igual a "está no arquivo" nas quatro
+            -- linhas — o que é impossível e denunciou o próprio erro. O arquivo
+            -- da Receita representa data ausente como 00000000, oito zeros, que
+            -- passa por qualquer comparação com '0'.
             SELECT lpad(cnpj_basico, 8, '0') AS cnpj_basico,
-                   max(NULLIF(opcao_mei, ''))      AS opcao_mei,
-                   max(NULLIF(data_opcao_mei, '')) AS data_opcao_mei
+                   max(NULLIF(opcao_mei, ''))                AS opcao_mei,
+                   max(""" + DATA_REAL.format(col="data_opcao_mei") + """)
+                                                             AS data_opcao_mei
             FROM bronze_simples GROUP BY 1
         ) s USING (cnpj_basico)
         GROUP BY 1 ORDER BY 2 DESC
@@ -134,7 +168,7 @@ def checar_regime(conn) -> bool:
         if situacao == "Baixada":
             resgataveis = ja_foi
 
-    print("\n  [c] Veredito sobre a correção proposta\n")
+    print("\n  [d] Veredito sobre a correção proposta\n")
     if resgataveis > 100_000:
         print(f"  {resgataveis:,} empresas BAIXADAS têm data_opcao_mei preenchida.")
         print("  O histórico existe no arquivo — a Receita mantém a data de adesão")
@@ -158,12 +192,20 @@ def checar_regime(conn) -> bool:
 def checar_capital(conn) -> bool:
     titulo("2. CAPITAL SOCIAL — valores-sentinela")
 
-    print("\n  [a] Os 12 valores de capital mais repetidos (acima de R$ 1 milhão)\n")
+    print("\n  [a] Todo valor de capital acima de R$ 100 bilhões\n")
+    # O primeiro corte aqui era "acima de R$ 1 milhão, os 12 mais repetidos", e
+    # não servia: R$ 2.000.000,00 aparece 20 mil vezes porque é um número
+    # redondo que gente de verdade escreve. Os sentinelas somem debaixo disso.
+    #
+    # Acima de R$ 100 bilhões não existe empresa brasileira — a maior
+    # capitalização social do país está na ordem de R$ 200 bilhões e são
+    # pouquíssimas. Nesta faixa dá para listar TUDO e olhar valor por valor,
+    # em vez de rankear por frequência.
     linhas = tabela(conn, """
         SELECT capital_social, count(*) AS qtd
         FROM empresas_gold
-        WHERE capital_social > 1000000
-        GROUP BY 1 ORDER BY 2 DESC LIMIT 12
+        WHERE capital_social >= 100000000000
+        GROUP BY 1 ORDER BY 1 DESC LIMIT 25
     """)
     print(f"  {'capital':>26}{'empresas':>12}   observação")
     print("  " + "-" * (LARGURA - 4))
@@ -188,17 +230,35 @@ def checar_capital(conn) -> bool:
             round(avg(capital_social) FILTER
                   (WHERE capital_social < 5e11)::numeric, 2)       AS media_sem,
             round(percentile_cont(0.5) WITHIN GROUP
-                  (ORDER BY capital_social)::numeric, 2)           AS mediana
+                  (ORDER BY capital_social)::numeric, 2)           AS mediana,
+            -- A métrica que o painel exibe: mediana sobre capital POSITIVO e
+            -- não-sentinela. A mediana da linha acima inclui os 26% de
+            -- empresas com capital zero e responde outra pergunta.
+            round(percentile_cont(0.5) WITHIN GROUP
+                  (ORDER BY capital_social) FILTER
+                  (WHERE capital_social > 0
+                     AND capital_social < 5e11)::numeric, 2)       AS mediana_pos,
+            round(avg(capital_social) FILTER
+                  (WHERE capital_social > 0
+                     AND capital_social < 5e11)::numeric, 2)       AS media_pos
         FROM empresas_gold
     """)[0]
-    total, tot_sent, qtd_sent, media, media_sem, mediana = linha
+    total, tot_sent, qtd_sent, media, media_sem, mediana, mediana_pos, media_pos = linha
     pct = 100.0 * float(tot_sent or 0) / float(total or 1)
 
     print(f"  empresas acima de R$ 500 bilhões ....... {qtd_sent:,}")
     print(f"  fatia do capital nacional que elas são .. {pct:.1f}%")
     print(f"  média de capital COM elas ............... R$ {float(media):,.2f}")
     print(f"  média de capital SEM elas ............... R$ {float(media_sem):,.2f}")
-    print(f"  mediana de capital ...................... R$ {float(mediana):,.2f}")
+    print(f"  mediana, toda a base .................... R$ {float(mediana):,.2f}")
+    print()
+    print("  Sobre capital POSITIVO, sem sentinela — é o que o painel exibe:")
+    print(f"    média ................................. R$ {float(media_pos):,.2f}")
+    print(f"    mediana ............................... R$ {float(mediana_pos):,.2f}")
+    if media_pos and mediana_pos and float(mediana_pos) > 0:
+        razao = float(media_pos) / float(mediana_pos)
+        print(f"    a média é {razao:,.0f}x a mediana — e nenhum sentinela")
+        print("    participa dessas duas contas. É a forma da distribuição.")
 
     contaminado = qtd_sent and pct > 5
     if contaminado:

@@ -290,6 +290,69 @@ def test_regime_nao_e_classificado_por_status_atual(cur):
     )
 
 
+def test_regimes_cobrem_a_base_inteira(cur):
+    """REGRESSÃO do rótulo "Não informado".
+
+    A primeira correção do bug do MEI trocou opcao_mei por foi_mei e parou aí.
+    O dashboard continuou descartando 19,5 milhões de empresas — as que não
+    constam do Simples.zip — porque a view as rotulava "Não informado" e o
+    gráfico filtrava esse rótulo fora.
+
+    O nome sugeria dado faltando. Era o contrário: o arquivo da Receita lista
+    quem aderiu ao Simples alguma vez, então estar ausente dele é informação
+    completa, e é exatamente o grupo de comparação da pergunta "MEI sobrevive
+    menos?".
+
+    A soma dos regimes tem que fechar com a base. Nenhuma empresa fora.
+    """
+    cur.execute("SELECT sum(total_empresas) FROM mv_sobrevivencia_regime")
+    dos_regimes = cur.fetchone()[0]
+    cur.execute("SELECT count(*) FROM empresas_gold")
+    assert dos_regimes == cur.fetchone()[0]
+
+    cur.execute("SELECT regime FROM mv_sobrevivencia_regime")
+    rotulos = {r[0] for r in cur.fetchall()}
+    assert "Não informado" not in rotulos, (
+        "'Não informado' voltou — ausência no Simples.zip é categoria, "
+        "não dado faltando"
+    )
+
+
+def test_grupo_de_controle_existe_e_tem_peso(cur):
+    """"Fora do Simples" precisa ser um grupo de verdade.
+
+    Sem ele a comparação por regime vira MEI contra Simples, que são o mesmo
+    universo tributário — a pergunta interessante exige quem nunca passou por
+    lá. Na base real são 19,5 M de 66,7 M.
+    """
+    cur.execute("""
+        SELECT round(100.0 * total_empresas
+               / (SELECT sum(total_empresas) FROM mv_sobrevivencia_regime), 1)
+        FROM mv_sobrevivencia_regime WHERE regime = 'Fora do Simples'
+    """)
+    linha = cur.fetchone()
+    assert linha is not None, "categoria 'Fora do Simples' não existe"
+    assert linha[0] > 5, f"grupo de controle com só {linha[0]}% da base"
+
+
+def test_foi_simples_nunca_e_falso(cur):
+    """Documenta a forma da fonte, e avisa se ela mudar.
+
+    Todas as 47,2 M de linhas do Simples.zip trazem data_opcao_simples
+    preenchida — o arquivo é a lista de quem aderiu, não um cadastro de
+    situação. Por isso "está no arquivo mas nunca aderiu" é conjunto vazio, e
+    por isso `foi_simples IS NULL` pode ser lido como "nunca optou".
+
+    Se este teste falhar, a premissa mudou e a categoria "Fora do Simples"
+    parou de significar o que o comentário em mv_analises_avancadas.sql diz.
+    """
+    cur.execute("""
+        SELECT round(100.0 * count(*) FILTER (WHERE foi_simples IS FALSE)
+               / NULLIF(count(*), 0), 4) FROM empresas_gold
+    """)
+    assert cur.fetchone()[0] < 1.0
+
+
 def test_coorte_regime_usa_as_mesmas_colunas(cur):
     """As duas views de regime têm que concordar sobre quem é MEI.
 

@@ -390,10 +390,15 @@ def recriar_dependentes(cur, capturado):
 
 # Capital social acima deste valor não é capital: é campo preenchido.
 #
-# A base real traz milhares de empresas com exatamente R$ 999.999.999.999,00 —
-# doze noves, o teto de um campo de 12 dígitos. Elas apareciam no topo de
-# "Maiores Empresas", davam a uma única cidade 67% do capital do país e
-# empurravam a média nacional de capital para a casa dos milhões.
+# A base real traz 169 empresas acima desta marca, boa parte com exatamente
+# R$ 999.999.999.999,00 — doze noves, o teto de um campo de 12 dígitos. São
+# 169 linhas em 66,7 milhões, e elas sozinhas respondem por 56,6% do capital
+# declarado do país. Apareciam no topo de "Maiores Empresas", davam a uma
+# única cidade 67% do capital no gráfico de pizza e empurravam a média
+# nacional de capital para a casa dos milhões.
+#
+# A desproporção é o ponto: 0,00025% das linhas movendo mais da metade de um
+# agregado nacional. Nenhuma checagem de completude ou de tipo pega isso.
 #
 # Para calibrar: a maior capitalização social legítima do Brasil está na ordem
 # de R$ 200 bilhões (Petrobras). R$ 500 bilhões é mais que o dobro disso e
@@ -485,14 +490,25 @@ LEFT JOIN (
     -- derrubaria a PRIMARY KEY lá embaixo — falha barulhenta, mas depois de
     -- 40 minutos de join.
     --
-    -- '0' e '' são as duas formas de "sem data" no arquivo da Receita; ambas
-    -- viram NULL aqui para que `IS NOT NULL` lá em cima signifique mesmo
-    -- "aderiu em algum momento".
+    -- "Sem data" aparece no arquivo da Receita em três formas: campo vazio,
+    -- o texto '0', e '00000000'. Só vale como adesão o que for oito dígitos
+    -- e não for tudo zero — qualquer regra mais frouxa marca a base inteira.
+    --
+    -- Isto não é hipótese: a primeira versão testava NOT IN ('', '0') e um
+    -- diagnóstico devolveu "já foi MEI" com contagem IDÊNTICA a "está no
+    -- arquivo", nas quatro situações cadastrais. Contagens que batem exatamente
+    -- assim não são coincidência, são uma condição sempre verdadeira. Com
+    -- aquela regra, foi_mei sairia true para todo mundo e a análise por regime
+    -- teria virado uma coluna só.
     SELECT lpad(cnpj_basico, 8, '0')   AS cnpj_basico,
            max(NULLIF(opcao_simples, '')) AS opcao_simples,
            max(NULLIF(opcao_mei, ''))     AS opcao_mei,
-           max(NULLIF(NULLIF(data_opcao_simples, ''), '0')) AS data_opcao_simples,
-           max(NULLIF(NULLIF(data_opcao_mei, ''), '0'))     AS data_opcao_mei
+           max(CASE WHEN data_opcao_simples ~ '^[0-9]{8}$'
+                     AND data_opcao_simples !~ '^0+$'
+                    THEN data_opcao_simples END)         AS data_opcao_simples,
+           max(CASE WHEN data_opcao_mei ~ '^[0-9]{8}$'
+                     AND data_opcao_mei !~ '^0+$'
+                    THEN data_opcao_mei END)             AS data_opcao_mei
     FROM bronze_simples
     GROUP BY 1
 ) si USING (cnpj_basico)
@@ -578,13 +594,24 @@ CHECKS = [
             SELECT round(100.0 * count(*) FILTER (WHERE situacao_cadastral = 8)
                          / NULLIF(count(*), 0), 2) AS pct
             FROM empresas_gold
-            WHERE foi_simples IS NOT NULL
-            GROUP BY CASE WHEN foi_mei THEN 'MEI'
+            GROUP BY CASE WHEN foi_mei     THEN 'MEI'
                           WHEN foi_simples THEN 'Simples'
-                          ELSE 'Normal' END
+                          ELSE 'Fora do Simples' END
             HAVING count(*) > 100000
         ) t""",
      lambda v, ctx: v is not None and v > 1),
+
+    # O Simples.zip lista quem aderiu ao regime alguma vez, e toda linha dele
+    # traz data de adesão. "Está no arquivo mas nunca aderiu" não existe.
+    #
+    # Se passar a existir, a natureza do arquivo mudou e a categoria "Fora do
+    # Simples" — que hoje significa "ausente do arquivo" — deixa de ser
+    # equivalente a "nunca optou". O comentário em mv_analises_avancadas.sql
+    # que explica a classificação estaria errado, e a carga para aqui.
+    ("Linhas no Simples sem data de adesão (%)",
+     "SELECT round(100.0 * count(*) FILTER (WHERE foi_simples IS FALSE) "
+     "/ NULLIF(count(*), 0), 4) FROM empresas_gold",
+     lambda v, ctx: v is not None and v < 1),
 
     # Guarda o LIMIAR contra si mesmo.
     #
@@ -622,6 +649,19 @@ INFORMATIVOS = [
     ("Delas, quantas já fecharam",
      "SELECT count(*) FROM empresas_gold "
      "WHERE foi_mei AND situacao_cadastral = 8"),
+
+    ("Empresas marcadas como MEI HOJE (opcao_mei)",
+     "SELECT count(*) FROM empresas_gold WHERE opcao_mei"),
+
+    # Contraste proposital com a linha acima. Se este número for próximo de
+    # zero enquanto o anterior é de milhões, está confirmado que opcao_mei
+    # descreve o presente e não serve para segmentar sobrevivência.
+    ("Delas, quantas já fecharam (deve ser quase zero)",
+     "SELECT count(*) FROM empresas_gold "
+     "WHERE opcao_mei AND situacao_cadastral = 8"),
+
+    ("Empresas fora do arquivo do Simples",
+     "SELECT count(*) FROM empresas_gold WHERE foi_simples IS NULL"),
 ]
 
 

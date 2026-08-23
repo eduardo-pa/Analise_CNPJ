@@ -112,10 +112,10 @@ CREATE UNIQUE INDEX uidx_mv_crescimento_uf ON mv_crescimento_uf (uf, ano);
 DROP MATERIALIZED VIEW IF EXISTS mv_painel_ano;
 
 -- `FILTER (WHERE NOT capital_sentinela)` exclui os R$ 999.999.999.999,00 do
--- arquivo da Receita — doze noves, campo preenchido até estourar. Alguns
--- milhares dessas linhas respondiam por dois terços do capital declarado do
--- país: davam 67% do capital nacional a uma única cidade no donut e punham a
--- média de capital na casa dos milhões.
+-- arquivo da Receita — doze noves, campo preenchido até estourar.
+-- 169 dessas linhas, em 66,7 milhões, respondiam por 56,6% do capital
+-- declarado do país: davam 67% do capital nacional a uma única cidade no donut
+-- e punham a média de capital na casa dos milhões.
 --
 -- A empresa continua contada em `empresas`. O que sai da conta é o valor.
 CREATE MATERIALIZED VIEW mv_painel_ano AS

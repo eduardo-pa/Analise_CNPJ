@@ -354,12 +354,19 @@ def carregar_sobrevivencia_geral():
 
 @st.cache_data(ttl=3600)
 def carregar_coorte_regime() -> pd.DataFrame:
-    """Histograma (safra x regime x ano da baixa) — base da curva por regime."""
+    """Histograma (safra x regime x ano da baixa) — base da curva por regime.
+
+    A versão anterior tinha `WHERE regime <> 'Não informado'` aqui, e aquele
+    filtro descartava 19,5 milhões de empresas — as que não constam do
+    Simples.zip. O nome sugeria dado faltando; era o oposto. O arquivo da
+    Receita lista quem aderiu ao Simples alguma vez, então estar fora dele é
+    informação completa: a empresa nunca passou pelo regime. Esse é justamente
+    o grupo de controle da pergunta "MEI sobrevive menos?".
+    """
     sql = text("""
         SELECT coorte, regime, ano_baixa, qtd
         FROM mv_coorte_regime
-        WHERE regime <> 'Não informado'
-          AND coorte BETWEEN 2009 AND :ano_fim
+        WHERE coorte BETWEEN 2009 AND :ano_fim
     """)
     with engine.connect() as conn:
         return pd.read_sql(sql, conn, params={"ano_fim": ULTIMO_ANO_COMPLETO})
@@ -429,8 +436,8 @@ def carregar_kpis_painel(setor_sel: str, cidade_sel: str) -> pd.Series:
 
     1. `capital_sentinela` fica de fora de tudo que soma capital. É a marca dos
        R$ 999.999.999.999,00 do arquivo da Receita — doze noves, campo
-       preenchido até estourar. Alguns milhares dessas linhas respondiam por
-       dois terços do capital declarado do país.
+       preenchido até estourar. São 169 linhas em 66,7 milhões, e elas
+       respondiam por 56,6% do capital declarado do país.
 
     2. A métrica de tendência é a MEDIANA, não a média. Capital social é uma
        distribuição de cauda pesada: a média nacional dava R$ 5,7 milhões, o
@@ -835,9 +842,10 @@ section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] hr {
             if sentinelas:
                 legenda += (
                     f"\n\nExcluídas {sentinelas:,} empresas".replace(",", ".")
-                    + " com capital de R$ 999.999.999.999,00 — doze noves, o "
-                    "teto do campo. Não é capital, é preenchimento, e sozinho "
-                    "respondia por dois terços do valor declarado do país. As "
+                    + " com capital acima de R$ 500 bilhões — boa parte com "
+                    "exatamente R$ 999.999.999.999,00, doze noves, o teto do "
+                    "campo. Não é capital, é preenchimento: essas poucas linhas "
+                    "respondiam por 56,6% do valor declarado do país. As "
                     "empresas continuam contadas; apenas o valor sai da soma."
                 )
             st.caption(legenda)
@@ -1410,10 +1418,13 @@ section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] hr {
             else:
                 try:
                     df_reg = carregar_regime()
-                    df_reg = df_reg[df_reg["regime"] != "Não informado"].copy()
-                    if df_reg.empty:
+                    # As três categorias entram. "Fora do Simples" já foi
+                    # descartada aqui como se fosse dado faltando — não é:
+                    # é a empresa que nunca aderiu ao Simples, e sem ela não
+                    # existe grupo de comparação.
+                    if len(df_reg) < 2:
                         raise ValueError(
-                            "mv_sobrevivencia_regime só tem 'Não informado' — "
+                            "mv_sobrevivencia_regime tem menos de dois regimes — "
                             "o join com bronze_simples não trouxe nada."
                         )
 
@@ -1453,15 +1464,21 @@ section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] hr {
                     st.caption(
                         "MEI é lido antes de Simples: todo MEI é optante do Simples, "
                         "então sem essa precedência o recorte MEI desapareceria "
-                        "dentro do Simples. 'Não informado' (empresa ausente do "
-                        "Simples.zip) fica de fora do gráfico.\n\n"
+                        "dentro do Simples.\n\n"
                         "**O regime vem do histórico, não do cadastro de hoje.** "
                         "A Receita marca como optante do MEI apenas quem está "
-                        "no regime agora — quem fechou saiu do registro. "
-                        "Classificar por essa marca montaria um grupo \"MEI\" "
-                        "só de empresas vivas, e a sobrevivência daria 100% por "
-                        "construção. Esta tela usa a data de adesão, que a "
-                        "Receita preserva depois da baixa."
+                        "no regime agora — quem fechou saiu do registro. Dos "
+                        "16,5 milhões de CNPJs marcados como MEI hoje, 229 "
+                        "constam como baixados. Classificar por essa marca "
+                        "montaria um grupo \"MEI\" só de empresas vivas, e a "
+                        "sobrevivência daria 100% por construção. Esta tela usa "
+                        "a data de adesão, que a Receita preserva depois da baixa.\n\n"
+                        "**\"Fora do Simples\" é categoria, não dado faltando.** "
+                        "O arquivo do Simples lista quem aderiu ao regime alguma "
+                        "vez — 47,2 milhões de linhas, todas com data de adesão. "
+                        "Estar ausente dele é informação completa: a empresa "
+                        "nunca passou pelo Simples, e portanto apura por lucro "
+                        "presumido ou real. É o grupo de comparação."
                     )
                 except Exception as e_reg:
                     st.error(f"❌ Erro no regime tributário: {e_reg}")
@@ -1531,7 +1548,7 @@ section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] hr {
                     CORES_REGIME = {
                         "MEI": "#3987e5",
                         "Simples Nacional": "#d95926",
-                        "Regime normal": "#199e70",
+                        "Fora do Simples": "#199e70",
                     }
 
                     fig_cr = go.Figure()
@@ -1588,15 +1605,17 @@ section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] hr {
                             "carrega companhias que tiveram décadas para se consolidar. "
                             "Fixando a safra, as três curvas partem do mesmo ponto no "
                             "tempo e a diferença que sobra é do regime, não da idade.\n\n"
-                            "Este gráfico já esteve errado, e vale contar como: ele "
-                            "exibiu MEI e Simples parados em **100,0%** aos 5 anos "
-                            "contra 48% do regime normal. Não era achado, era "
-                            "tautologia — o recorte usava a marca de optante ATUAL, "
-                            "que só sobrevivente carrega. Segmentar o passado por um "
-                            "atributo do presente condiciona na sobrevivência. É o "
-                            "mesmo erro dos 44,5 anos, com outra roupa, e agora tem "
-                            "um portão de qualidade e dois testes de regressão em "
-                            "cima dele."
+                            "Este gráfico já esteve errado duas vezes, e as duas "
+                            "valem a pena. Primeiro ele exibiu MEI e Simples parados "
+                            "em **100,0%** aos 5 anos contra 48% do regime normal — "
+                            "tautologia, porque o recorte usava a marca de optante "
+                            "ATUAL, que só sobrevivente carrega. Depois, já "
+                            "corrigido, ele ainda descartava 19,5 milhões de "
+                            "empresas sob o rótulo \"Não informado\": eram as que "
+                            "não constam do arquivo do Simples, ou seja, exatamente "
+                            "o grupo que nunca aderiu ao regime — o controle da "
+                            "comparação. Hoje há um portão de qualidade e testes de "
+                            "regressão em cima dos dois."
                         )
             except Exception as e_cr:
                 st.error(f"❌ Erro na comparação por regime: {e_cr}")

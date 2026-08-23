@@ -27,20 +27,41 @@
 -- registro do Simples, e quem fecha sai do registro — então o grupo "MEI"
 -- definido por ele contém apenas empresas vivas, e a sobrevivência dá 100% por
 -- construção. Foi exatamente o que o dashboard exibiu: MEI e Simples parados
--- em 100,0% aos 5 anos contra 48% do regime normal.
+-- em 100,0% aos 5 anos contra 48% do regime normal. Na base real, dos
+-- 16.479.119 CNPJs marcados como MEI hoje, 229 constam como baixados.
 --
 -- foi_mei vem de data_opcao_mei, que a Receita preserva depois da exclusão e
 -- depois da baixa. É o único dos dois que descreve o passado.
+--
+--
+-- A TERCEIRA CATEGORIA É A AUSÊNCIA NO ARQUIVO, e isso não era óbvio.
+--
+-- O Simples.zip tem 47.184.414 linhas para uma base de 66,7 milhões de
+-- empresas, e TODAS as 47 milhões trazem data_opcao_simples preenchida — zero
+-- exceções. O arquivo não é um cadastro de "situação perante o Simples": é a
+-- lista de quem aderiu ao Simples alguma vez. Quem nunca aderiu não está lá.
+--
+-- Duas consequências:
+--
+--   a) `foi_simples IS FALSE` é um conjunto VAZIO. A empresa ou está no
+--      arquivo com data de adesão, ou não está no arquivo.
+--   b) o grupo de comparação — empresa de lucro presumido ou real, que nunca
+--      passou pelo Simples — é justamente o que a versão anterior descartava
+--      como "Não informado". Eram 19,5 milhões de empresas jogadas fora por
+--      um rótulo errado.
+--
+-- Por isso a ausência vira categoria própria, "Fora do Simples", em vez de
+-- buraco. O informativo do etl_cnpj.py conta quantas linhas caem no ramo (a)
+-- — se deixar de ser zero, a fonte mudou e este comentário está desatualizado.
 -- ---------------------------------------------------------------------------
 DROP MATERIALIZED VIEW IF EXISTS mv_sobrevivencia_regime;
 
 CREATE MATERIALIZED VIEW mv_sobrevivencia_regime AS
 WITH classificada AS (
     SELECT
-        CASE WHEN foi_mei                THEN 'MEI'
-             WHEN foi_simples            THEN 'Simples Nacional'
-             WHEN foi_simples IS FALSE   THEN 'Regime normal'
-             ELSE                             'Não informado' END AS regime,
+        CASE WHEN foi_mei     THEN 'MEI'
+             WHEN foi_simples THEN 'Simples Nacional'
+             ELSE                  'Fora do Simples' END AS regime,
         situacao_cadastral,
         CASE WHEN situacao_cadastral = 8
                   AND data_situacao IS NOT NULL
@@ -116,11 +137,12 @@ DROP MATERIALIZED VIEW IF EXISTS mv_coorte_regime;
 CREATE MATERIALIZED VIEW mv_coorte_regime AS
 SELECT
     EXTRACT(YEAR FROM data_abertura)::int AS coorte,
-    -- foi_mei / foi_simples, pelo mesmo motivo da view 1 acima.
-    CASE WHEN foi_mei              THEN 'MEI'
-         WHEN foi_simples          THEN 'Simples Nacional'
-         WHEN foi_simples IS FALSE THEN 'Regime normal'
-         ELSE                           'Não informado' END AS regime,
+    -- Mesmas três categorias da view 1, pelos mesmos motivos. Se alterar uma,
+    -- altere a outra: test_coorte_regime_usa_as_mesmas_colunas falha se as
+    -- duas discordarem sobre quem é MEI.
+    CASE WHEN foi_mei     THEN 'MEI'
+         WHEN foi_simples THEN 'Simples Nacional'
+         ELSE                  'Fora do Simples' END AS regime,
     COALESCE(
         CASE WHEN situacao_cadastral = 8
                   AND data_situacao IS NOT NULL

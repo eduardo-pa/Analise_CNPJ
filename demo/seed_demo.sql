@@ -95,9 +95,10 @@ com_capital AS (
         -- 26% com capital zero; cauda longuíssima no topo, como na base real.
         --
         -- O ramo dos 0,05% reproduz o VALOR-SENTINELA: na base da Receita há
-        -- milhares de empresas com exatamente R$ 999.999.999.999,00 — doze
-        -- noves, o teto do campo. Não é capital, é preenchimento, e sozinho
-        -- respondia por dois terços do capital declarado do país.
+        -- 169 empresas com capital acima de R$ 500 bilhões, boa parte com
+        -- exatamente R$ 999.999.999.999,00 — doze noves, o teto do campo. Não
+        -- é capital, é preenchimento, e essas 169 linhas sozinhas respondiam
+        -- por 56,6% do capital declarado do país.
         --
         -- Está aqui de propósito. Uma base de demonstração que só contém dado
         -- limpo não exercita o código que existe para lidar com dado sujo: os
@@ -142,29 +143,39 @@ SELECT
          ELSE NULL END                                           AS motivo_situacao,
     -- REGIME TRIBUTÁRIO — duas colunas que parecem a mesma coisa e não são.
     --
-    -- foi_simples / foi_mei  = aderiu em ALGUM momento (data_opcao_* na origem)
-    -- opcao_simples / opcao_mei = é optante HOJE (opcao_* na origem)
+    -- foi_simples / foi_mei     = aderiu em ALGUM momento (data_opcao_* na origem)
+    -- opcao_simples / opcao_mei = é optante HOJE          (opcao_* na origem)
     --
-    -- Na base real, quem fecha sai do registro do Simples. Por isso o seed
-    -- força opcao_* = false para toda empresa baixada: é a patologia da fonte,
-    -- reproduzida de propósito.
+    -- O seed reproduz duas patologias da fonte, ambas de propósito.
     --
-    -- Sem isso, o seed seria mais bem-comportado que a realidade e o teste
-    -- test_regime_nao_e_classificado_por_status_atual passaria mesmo com o bug
-    -- de volta. Uma base de demonstração honesta precisa saber mentir do mesmo
-    -- jeito que a base de verdade mente.
-    CASE WHEN r_regime < 0.15    THEN NULL
-         WHEN r_situacao >= 0.466 AND r_regime < 0.75 THEN true
+    -- (1) Quem fecha sai do registro do Simples. Daí opcao_* virar false para
+    --     toda empresa baixada. Sem isso o seed seria mais bem-comportado que a
+    --     realidade e test_regime_nao_e_classificado_por_status_atual passaria
+    --     mesmo com o bug de volta.
+    --
+    -- (2) O Simples.zip só contém quem aderiu ao Simples alguma vez — 47,2 M de
+    --     linhas para 66,7 M de empresas, todas com data de adesão preenchida.
+    --     Quem nunca aderiu simplesmente não está no arquivo. Por isso
+    --     foi_simples aqui é NULL (ausente) ou true (aderiu), e NUNCA false:
+    --     "está no arquivo mas sem data de adesão" não acontece na base real.
+    --
+    --     Os ~29% de NULL espelham a proporção real de empresas fora do
+    --     arquivo. Esse grupo é o CONTROLE da comparação por regime, não dado
+    --     faltando — e uma versão anterior do dashboard o descartava sob o
+    --     rótulo "Não informado".
+    --
+    -- Uma base de demonstração honesta precisa saber mentir do mesmo jeito que
+    -- a base de verdade mente.
+    CASE WHEN r_regime < 0.29    THEN NULL
+         WHEN r_situacao >= 0.466 AND r_regime < 0.80 THEN true
          ELSE false END                                          AS opcao_simples,
-    CASE WHEN r_regime < 0.15    THEN NULL
-         WHEN r_situacao >= 0.466 AND r_regime < 0.45 THEN true
+    CASE WHEN r_regime < 0.29    THEN NULL
+         WHEN r_situacao >= 0.466 AND r_regime < 0.66 THEN true
          ELSE false END                                          AS opcao_mei,
     -- O histórico, esse a Receita preserva — inclusive para as baixadas.
-    CASE WHEN r_regime < 0.15 THEN NULL
-         WHEN r_regime < 0.75 THEN true
-         ELSE false END                                          AS foi_simples,
-    CASE WHEN r_regime < 0.15 THEN NULL
-         WHEN r_regime < 0.45 THEN true
+    CASE WHEN r_regime < 0.29 THEN NULL ELSE true END            AS foi_simples,
+    CASE WHEN r_regime < 0.29 THEN NULL
+         WHEN r_regime < 0.66 THEN true
          ELSE false END                                          AS foi_mei,
     -- Contagem de sócios. Na base real vem do Socios.zip, agregado ANTES do
     -- join; aqui é gerado direto. Muitas empresas com zero: empresário
