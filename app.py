@@ -571,7 +571,7 @@ else:
     # --- SIDEBAR ---
     with st.sidebar:
         st.title(f"👋 Olá, {st.session_state['user_nome']}")
-        if st.button("Sair do Sistema", use_container_width=True):
+        if st.button("Sair do Sistema", width="stretch"):
             st.session_state.clear()
             st.rerun()
         
@@ -589,7 +589,7 @@ else:
                 col_btn, col_del = st.columns([4, 1])
                 with col_btn:
                     if st.button(
-                        fav["nome"], key=f"fav_apply_{i}", use_container_width=True
+                        fav["nome"], key=f"fav_apply_{i}", width="stretch"
                     ):
                         st.session_state["setor_sel"] = fav["setor"]
                         st.session_state["cidade_sel"] = fav["cidade"]
@@ -615,7 +615,7 @@ else:
                 key="nome_fav",
                 placeholder="ex.: Tech São Paulo",
             )
-            if st.button("Salvar", key="btn_salvar_fav", use_container_width=True):
+            if st.button("Salvar", key="btn_salvar_fav", width="stretch"):
                 if nome_fav.strip():
                     favoritos.append(
                         {"nome": nome_fav.strip(), "setor": setor_sel, "cidade": cidade_sel}
@@ -698,7 +698,7 @@ section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] hr {
                     df_evol, x="ano", y="qtd", markers=True, template="plotly_dark",
                     labels={"ano": "Ano de abertura", "qtd": "Empresas abertas"},
                 )
-                st.plotly_chart(fig_l, use_container_width=True)
+                st.plotly_chart(fig_l, width="stretch")
                 st.caption(
                     f"Série encerra em {ULTIMO_ANO_COMPLETO}. A competência da base é "
                     f"{COMPETENCIA:%m/%Y}, então {COMPETENCIA.year} tem apenas "
@@ -710,7 +710,7 @@ section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] hr {
                 fig_p = px.pie(
                     df_top_cidades, names="cidade", values="capital_total", hole=0.4
                 )
-                st.plotly_chart(fig_p, use_container_width=True)
+                st.plotly_chart(fig_p, width="stretch")
 
             st.divider()
 
@@ -745,7 +745,7 @@ section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] hr {
 
             st.dataframe(
                 df_rank,
-                use_container_width=True, hide_index=True,
+                width="stretch", hide_index=True,
                 column_config={
                     "capital_social": st.column_config.NumberColumn("Capital (R$)", format="R$ %.2f"),
                     "data_abertura": st.column_config.DateColumn("Abertura")
@@ -771,7 +771,7 @@ section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] hr {
                     data=df_rank.to_csv(index=False, sep=";").encode("utf-8-sig"),
                     file_name=f"ranking_empresas_{today}.csv",
                     mime="text/csv",
-                    use_container_width=True,
+                    width="stretch",
                 )
 
             with col_xlsx:
@@ -782,7 +782,7 @@ section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] hr {
                     data=_buf.getvalue(),
                     file_name=f"ranking_empresas_{today}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
+                    width="stretch",
                 )
 
         else:
@@ -855,7 +855,7 @@ section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] hr {
                 ),
             )
             fig_tree.update_layout(margin=dict(t=50, l=10, r=10, b=10))
-            st.plotly_chart(fig_tree, use_container_width=True)
+            st.plotly_chart(fig_tree, width="stretch")
         else:
             st.info("Nenhum setor encontrado para o treemap.")
     except Exception as e_tree:
@@ -995,7 +995,7 @@ section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] hr {
                                 xanchor="left", x=0, title=""),
                     margin=dict(l=10, r=10, t=60, b=40),
                 )
-                st.plotly_chart(fig_faixas, use_container_width=True)
+                st.plotly_chart(fig_faixas, width="stretch")
 
                 pior = precoce.index[-1]
                 st.caption(
@@ -1014,7 +1014,7 @@ section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] hr {
                     )
                     st.dataframe(
                         tabela_faixas.style.format("{:.1f}%", na_rep="—"),
-                        use_container_width=True,
+                        width="stretch",
                     )
                     st.caption(
                         "Percentual das baixadas de cada setor por faixa de duração. "
@@ -1089,7 +1089,7 @@ section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] hr {
                     hovermode="x unified",
                     legend_title="Safra",
                 )
-                st.plotly_chart(fig_curva, use_container_width=True)
+                st.plotly_chart(fig_curva, width="stretch")
 
                 # Taxa aos 5 anos por safra — só safras com 5 anos observáveis.
                 pontos = []
@@ -1130,7 +1130,7 @@ section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] hr {
                         title="Sobrevivência aos 5 anos, safra a safra",
                         margin=dict(t=50, b=40),
                     )
-                    st.plotly_chart(fig_5, use_container_width=True)
+                    st.plotly_chart(fig_5, width="stretch")
                     st.caption(
                         "Só aparecem as safras que já tiveram 5 anos para serem "
                         f"observadas (até {ULTIMO_ANO_COMPLETO - 5}). Incluir safras mais "
@@ -1149,7 +1149,7 @@ section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] hr {
                             df_5.rename(columns={"safra": "Safra",
                                                  "pct": "% ativas aos 5 anos"})
                                 .style.format({"% ativas aos 5 anos": "{:.1f}%"}),
-                            use_container_width=True, hide_index=True,
+                            width="stretch", hide_index=True,
                         )
             else:
                 st.info("Selecione ao menos uma safra.")
@@ -1202,7 +1202,7 @@ section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] hr {
                 legend=dict(orientation="h", yanchor="bottom", y=1.02,
                             xanchor="right", x=1),
             )
-            st.plotly_chart(fig_nat, use_container_width=True)
+            st.plotly_chart(fig_nat, width="stretch")
 
             negativos = df_nat[df_nat["saldo"] < 0]["ano"].tolist()
             recorte = ", ".join(ufs_nat) if ufs_nat else "Brasil"
@@ -1273,12 +1273,12 @@ section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] hr {
                     fig_reg.update_traces(textposition="outside")
                     fig_reg.update_layout(height=300, coloraxis_showscale=False,
                                           margin=dict(t=20))
-                    st.plotly_chart(fig_reg, use_container_width=True)
+                    st.plotly_chart(fig_reg, width="stretch")
 
                     st.dataframe(
                         df_reg[["regime", "total_empresas", "pct_ativas",
                                 "mediana", "pct_menos_5_anos"]],
-                        use_container_width=True, hide_index=True,
+                        width="stretch", hide_index=True,
                         column_config={
                             "regime": "Regime",
                             "total_empresas": st.column_config.NumberColumn(
@@ -1326,7 +1326,7 @@ section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] hr {
                     )
                     fig_mot.update_layout(height=460, coloraxis_showscale=False,
                                           margin=dict(t=20))
-                    st.plotly_chart(fig_mot, use_container_width=True)
+                    st.plotly_chart(fig_mot, width="stretch")
                     st.caption(
                         "'Empresa fechou' esconde eventos muito diferentes: "
                         "encerramento voluntário é decisão do dono; baixa por "
@@ -1400,7 +1400,7 @@ section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] hr {
                                     xanchor="left", x=0, title=""),
                         margin=dict(t=60, b=40),
                     )
-                    st.plotly_chart(fig_cr, use_container_width=True)
+                    st.plotly_chart(fig_cr, width="stretch")
 
                     aos_5 = {}
                     for regime in CORES_REGIME:
@@ -1463,7 +1463,7 @@ section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] hr {
                 coloraxis_showscale=False,
                 yaxis=dict(tickfont=dict(size=11)),
             )
-            st.plotly_chart(fig_rank, use_container_width=True)
+            st.plotly_chart(fig_rank, width="stretch")
             st.caption(
                 f"Top 30 municípios por volume de empresas abertas desde 1990. "
                 f"Total na base: {df_ranking['total_empresas'].sum():,} empresas."
@@ -1509,7 +1509,7 @@ section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] hr {
                     labels={"ano": "Ano", "total": "Empresas Abertas", "nome_municipio": "Município"},
                 )
                 fig_uf.update_layout(height=450)
-                st.plotly_chart(fig_uf, use_container_width=True)
+                st.plotly_chart(fig_uf, width="stretch")
             else:
                 st.info("Selecione ao menos um município para exibir o gráfico.")
 
@@ -1599,7 +1599,7 @@ section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] hr {
                                 xanchor="left", x=0, title=""),
                     margin=dict(l=10, r=10, t=60, b=40),
                 )
-                st.plotly_chart(fig_cap, use_container_width=True)
+                st.plotly_chart(fig_cap, width="stretch")
 
                 ultimo = int(df_cap["ano"].max())
                 st.caption(
@@ -1617,7 +1617,7 @@ section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] hr {
                     ).sort_values(ultimo, ascending=False)
                     st.dataframe(
                         matriz.style.format("R$ {:,.0f}", na_rep="—"),
-                        use_container_width=True,
+                        width="stretch",
                     )
                     st.caption(
                         "O gráfico mostra 5 municípios para continuar legível; "

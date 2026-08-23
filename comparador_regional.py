@@ -2,7 +2,7 @@
 comparador_regional.py
 ======================
 Funcionalidade: Comparador Regional de UFs/Municípios
-Página nova do dashboard TCC — Análise de Dados CNPJ
+Página do dashboard — Demografia Empresarial Brasil
 
 Lógica:
 - Usuário seleciona 2 a 4 regiões (UF ou Município)
@@ -42,7 +42,7 @@ from sqlalchemy import text
 # Streamlit Cloud injeta st.secrets; local usa DATABASE_URL do .env.
 from database import engine, COMPETENCIA, ULTIMO_ANO_COMPLETO
                               # resolvedor neutro: evita import circular
-                              # (app importa este modulo)
+                              # (app.py importa este modulo)
 
 # ---------------------------------------------------------------------------
 # Constantes
@@ -375,7 +375,7 @@ def _render_bar_capital(df_kpi: pd.DataFrame, col_regiao: str, cores: dict[str, 
         font=dict(size=13),
     )
     fig.update_xaxes(showticklabels=False, showgrid=False)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
 def _render_heatmap_setores(df_setores: pd.DataFrame, col_regiao: str) -> None:
@@ -412,7 +412,7 @@ def _render_heatmap_setores(df_setores: pd.DataFrame, col_regiao: str) -> None:
         font=dict(size=12),
         yaxis=dict(autorange="reversed"),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
 def _render_linha_crescimento(
@@ -443,7 +443,7 @@ def _render_linha_crescimento(
     )
     fig.update_xaxes(showgrid=False)
     fig.update_yaxes(showgrid=True, gridcolor="rgba(128,128,128,0.15)")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
 def _is_dark() -> bool:

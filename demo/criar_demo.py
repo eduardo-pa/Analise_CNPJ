@@ -28,8 +28,14 @@ load_dotenv()
 RAIZ = Path(__file__).resolve().parent.parent
 
 # Ordem importa: as MVs de análise dependem da empresas_gold criada pelo seed.
+#
+# Esta lista precisa cobrir TODAS as views que o dashboard consulta. Quando
+# faltou o mv_base_dashboard.sql aqui, o app subia com três blocos em erro —
+# e só o CI pegou, porque na máquina de desenvolvimento aquelas views já
+# existiam de execuções anteriores do ETL.
 SCRIPTS = [
     RAIZ / "demo" / "seed_demo.sql",
+    RAIZ / "mv_base_dashboard.sql",
     RAIZ / "mv_sobrevivencia_setor.sql",
     RAIZ / "mv_correcoes_painel.sql",
     RAIZ / "mv_analises_sobrevivencia.sql",
