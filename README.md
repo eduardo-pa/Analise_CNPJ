@@ -35,6 +35,46 @@ Cada número sai de uma view materializada sobre as 66,7 M de linhas — não de
 
 ---
 
+## 🌐 Demonstração online
+
+**[▶ Abrir o dashboard](https://SEU-APP.streamlit.app)**
+
+A instância pública roda sobre uma base **sintética** de 300 mil empresas, com o mesmo esquema e o mesmo código da real. Serve para ver o produto funcionando; os números do Brasil são os desta página, apurados sobre as 66,7 milhões de linhas.
+
+<details>
+<summary>Como publicar sua própria instância</summary>
+
+**1. Banco no [Neon](https://neon.tech)** (Postgres puro, plano gratuito). Crie um projeto e copie a connection string.
+
+**2. Popule com a base de demonstração**, do seu terminal (não do SQL Editor do Neon — é comando de shell, não SQL):
+
+```powershell
+# PowerShell
+$env:DATABASE_URL = "postgresql://user:senha@ep-xxx.neon.tech/neondb?sslmode=require"
+python demo/criar_demo.py
+```
+```bash
+# bash / zsh
+DATABASE_URL="postgresql://user:senha@ep-xxx.neon.tech/neondb?sslmode=require" \
+  python demo/criar_demo.py
+```
+
+**3. [Streamlit Community Cloud](https://share.streamlit.io)**: conecte o repositório, aponte para `app.py` e configure os secrets:
+
+```toml
+db_url = "postgresql://user:senha@ep-xxx.neon.tech/cnpj?sslmode=require"
+CNPJ_COMPETENCIA = "2026-02-28"
+modo_demo = true
+```
+
+`modo_demo = true` faz o app entrar sem login e exibir o banner de dados sintéticos. **Ligue apenas sobre a base de demonstração** — sobre dados reais, isso deixaria o dashboard aberto sem autenticação.
+
+Ambos os serviços hibernam por inatividade no plano gratuito: a primeira visita depois de um tempo parado leva alguns segundos para acordar.
+
+</details>
+
+---
+
 ## 🚀 Rodar em 5 minutos
 
 ```bash

@@ -1,4 +1,5 @@
 import io
+import os
 import urllib.request
 from datetime import date
 import streamlit as st
@@ -531,8 +532,35 @@ st.set_page_config(
 )
 init_db()
 
+# ---------------------------------------------------------------------------
+# MODO DEMONSTRAÇÃO
+#
+# Numa instância pública, a tela de login é uma porta fechada na cara de quem
+# só quer ver o projeto funcionando. Com CNPJ_MODO_DEMO ligado, o app entra
+# direto — e assume, em banner fixo, que os dados são sintéticos.
+#
+# Ligue apenas onde a base for a de demonstração. Sobre dados reais isso
+# deixaria o dashboard aberto sem autenticação nenhuma.
+# ---------------------------------------------------------------------------
+def _modo_demo() -> bool:
+    if os.environ.get("CNPJ_MODO_DEMO", "").strip() in ("1", "true", "True"):
+        return True
+    try:
+        return bool(st.secrets.get("modo_demo", False))
+    except Exception:
+        # Sem arquivo de secrets — normal em execução local.
+        return False
+
+
+MODO_DEMO = _modo_demo()
+
 if 'logado' not in st.session_state:
     st.session_state['logado'] = False
+
+if MODO_DEMO and not st.session_state['logado']:
+    st.session_state['logado'] = True
+    st.session_state['user_nome'] = "Visitante"
+    st.session_state['user_email'] = "demo@exemplo.local"
 
 # --- INTERFACE DE ACESSO ---
 if not st.session_state['logado']:
@@ -568,10 +596,23 @@ if not st.session_state['logado']:
 
 # --- DASHBOARD LOGADO ---
 else:
+    # Aviso fixo, no topo de tudo. A instância pública roda sobre dados
+    # gerados, e o projeto inteiro é sobre não deixar número errado passar por
+    # certo — esconder isso numa nota de rodapé contradiria a própria tese.
+    if MODO_DEMO:
+        st.warning(
+            "**Demonstração com dados sintéticos.** Os gráficos abaixo exercitam "
+            "o pipeline real sobre 300 mil empresas geradas — nenhum número aqui "
+            "descreve o Brasil. Os resultados apurados sobre as 66,7 milhões de "
+            "empresas da Receita Federal estão no "
+            "[README do projeto](https://github.com/eduardo-pa/Analise_CNPJ#-o-que-ele-responde).",
+            icon="🧪",
+        )
+
     # --- SIDEBAR ---
     with st.sidebar:
         st.title(f"👋 Olá, {st.session_state['user_nome']}")
-        if st.button("Sair do Sistema", width="stretch"):
+        if not MODO_DEMO and st.button("Sair do Sistema", width="stretch"):
             st.session_state.clear()
             st.rerun()
         
@@ -630,12 +671,15 @@ else:
                     st.warning("Digite um nome para o favorito.")
 
         st.markdown("---")
-        with st.expander("⚙️ Gerenciar Conta"):
-            confirma = st.checkbox("Confirmar exclusão")
-            if st.button("EXCLUIR MINHA CONTA", type="primary"):
-                if confirma and excluir_conta_db(st.session_state['user_email']):
-                    st.session_state.clear()
-                    st.rerun()
+        # Sem gestão de conta na instância pública: não existe conta de verdade
+        # por trás do visitante, e um botão de excluir ali só confundiria.
+        if not MODO_DEMO:
+            with st.expander("⚙️ Gerenciar Conta"):
+                confirma = st.checkbox("Confirmar exclusão")
+                if st.button("EXCLUIR MINHA CONTA", type="primary"):
+                    if confirma and excluir_conta_db(st.session_state['user_email']):
+                        st.session_state.clear()
+                        st.rerun()
 
     # --- CORPO DO DASHBOARD ---
     st.markdown("""
