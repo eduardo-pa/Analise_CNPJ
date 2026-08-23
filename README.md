@@ -1,6 +1,6 @@
 # 🏛️ Demografia Empresarial Brasil
 
-> Pipeline e dashboard sobre a base pública de CNPJ da Receita Federal — 66,7 milhões de empresas — para responder quanto tempo uma empresa brasileira dura, onde ela abre e por que fecha.
+> Pipeline de dados e dashboard analítico sobre a base pública de CNPJ da Receita Federal — **66,7 milhões de empresas** — para medir quanto tempo uma empresa brasileira dura, onde ela abre e por que fecha.
 
 ![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat&logo=python&logoColor=white)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-336791?style=flat&logo=postgresql&logoColor=white)
@@ -9,48 +9,33 @@
 ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?style=flat&logo=docker&logoColor=white)
 [![CI](https://github.com/eduardo-pa/Analise_CNPJ/actions/workflows/ci.yml/badge.svg)](https://github.com/eduardo-pa/Analise_CNPJ/actions/workflows/ci.yml)
 
-O join roda no PostgreSQL, não em pandas — a base não cabe em memória. O dashboard consulta views materializadas, nunca a tabela crua.
-
 ---
 
-## 📌 O que este projeto é
+## 📊 O que ele responde
 
-Ele começou errado, e a correção é a parte interessante.
+Quatro perguntas que a base pública permite responder, e quase nenhuma análise responde direito:
 
-A primeira versão publicou que **empresas baixadas no Brasil duraram em média 44,5 anos**. O número passou por todas as validações de qualidade de dado que existiam: zero datas nulas, zero datas futuras, zero duplicatas. E estava uma ordem de grandeza fora — o IBGE aponta que ~60% das empresas não chegam aos 5 anos.
-
-A base estava limpa. O **pipeline** é que estava errado, em três camadas independentes:
-
-| Camada | O erro | Efeito |
-|---|---|---|
-| **ETL** | Cruzava `Empresas0.zip` com `Estabelecimentos0.zip` assumindo shard 0 ↔ shard 0. Empresas vem ordenado por CNPJ; Estabelecimentos vem embaralhado. | A interseção das primeiras 200 mil linhas de cada: **1 registro**. Analisava 10,6 M de empresas de 66,7 M — 16% do país, por acidente, com 81% empilhados nos anos 2020. |
-| **Métrica** | Media `hoje − data_abertura` sobre todas as empresas, inclusive as já fechadas. | Media idade desde a fundação, não sobrevivência. Empresa aberta em 1990 e baixada em 1995 contava 36 anos em vez de 5. |
-| **Apresentação** | Estimava a mediana nacional como média ponderada das medianas dos 20 setores de maior mediana. | Viés de seleção somado a "média de medianas não é mediana": **20,9 anos** contra os **3,3** reais. |
-
-Nenhum dos três aparece numa inspeção do dado. Todos aparecem numa validação cruzada contra uma fonte externa.
-
-> **0% de datas inválidas não significa 0% de conclusões inválidas.**
-> Validar o dado não é validar o pipeline.
-
-É daí que vem o resto do projeto: portões de qualidade que abortam a carga, uma suíte que roda contra PostgreSQL de verdade em vez de mocks, e testes de regressão nomeados pelos bugs que já foram ao ar.
-
-### O Brasil, sobre a base corrigida
-
-| Indicador | Valor |
+| Pergunta | Resposta sobre a base completa |
 |---|---|
-| Empresas registradas | 66.682.481 |
-| Baixadas | 46,6% |
-| Ativas | 40,3% |
-| Sobrevivência mediana das baixadas | 3,3 anos |
-| Capital social zero | 26,3% |
+| Quanto tempo uma empresa brasileira dura? | Mediana de **3,3 anos** entre as baixadas |
+| Quantas empresas o país tem, de fato? | **66.682.481** registradas · 40,3% ativas · 46,6% baixadas |
+| Empresa brasileira nasce capitalizada? | **26,3%** abrem com capital social zero |
+| MEI sobrevive menos que empresa de regime normal? | Comparável safra a safra no dashboard, controlando pela idade |
 
-Um cuidado que vale para qualquer leitura destes números: aqui "morreu" significa **baixa formal** no cadastro. Empresa que parou de operar e nunca deu baixa segue contada como viva. É uma pergunta diferente da que o IBGE responde (cessação de atividade), e é por isso que as taxas de sobrevivência aqui são mais otimistas que as dele.
+Cada número sai de uma view materializada sobre as 66,7 M de linhas — não de amostra, não de estimativa.
+
+## ⚡ Destaques técnicos
+
+- **Join de 66,7 M × 69,9 M linhas no PostgreSQL**, não em pandas — a base não cabe em memória. Os CSVs entram por `COPY` direto do ZIP, sem descompactar em disco.
+- **Query-First**: `COUNT`, `SUM`, `percentile_cont` e `GROUP BY` rodam no banco; o Python recebe agregado pronto. Nenhuma consulta do dashboard traz linha crua.
+- **7 portões de qualidade** que abortam a carga com rollback em vez de gravar dado silenciosamente errado.
+- **125 testes**, dos quais 21 rodam contra um PostgreSQL de verdade — não contra mocks.
+- **CI que renderiza o dashboard inteiro** a cada push, para pegar gráfico que quebra em tela sem quebrar no import.
+- **Base de demonstração sintética**: qualquer pessoa clona e roda em 5 minutos, sem baixar os 7 GB da Receita.
 
 ---
 
-## 🚀 Rodar em 5 minutos (dados sintéticos)
-
-O pipeline real precisa de ~7 GB de arquivos da Receita e ~75 GB de tabelas intermediárias. Para avaliar o projeto sem isso, há uma base de demonstração com o mesmo esquema:
+## 🚀 Rodar em 5 minutos
 
 ```bash
 git clone https://github.com/eduardo-pa/Analise_CNPJ
@@ -59,56 +44,19 @@ pip install -r requirements.txt
 
 cp .env.example .env          # o padrão já aponta para o Postgres do compose
 docker compose up -d
-python demo/criar_demo.py     # cria a gold sintética + as 13 views
+python demo/criar_demo.py     # gold sintética + as 15 views materializadas
 
 streamlit run app.py
 ```
 
-> ⚠️ Os dados da demonstração são **gerados**, não são a base da Receita. Toda consulta, view e teste roda igual em cima deles — mas nenhum número ali descreve o Brasil.
-
-## 🗄️ Rodar sobre a base real
-
-**1.** Baixe os arquivos de uma competência em [dados abertos da Receita](https://dadosabertos.rfb.gov.br/CNPJ/): `Empresas0..9.zip`, `Estabelecimentos0..9.zip`, `Simples.zip`, `Cnaes.zip`, `Municipios.zip`, `Naturezas.zip`, `Motivos.zip`.
-
-**2.** Configure o `.env`:
-
-```ini
-DATABASE_URL=postgresql://usuario:senha@localhost:5432/cnpj
-CNPJ_DIR=C:\caminho\para\os\zips
-CNPJ_COMPETENCIA=2026-02-28
-# Opcional: manda as tabelas bronze (~75 GB) para outro volume
-CNPJ_TABLESPACE_DIR=D:\cnpj\pgdata
-```
-
-**3.** Execute:
-
-```bash
-python carregar_referencias.py                       # CNAEs, municípios, motivos
-python etl_cnpj.py                                   # bronze → gold, com portões
-python aplicar_indices.py mv_base_dashboard.sql
-python aplicar_indices.py mv_correcoes_painel.sql
-python aplicar_indices.py mv_analises_sobrevivencia.sql
-python aplicar_indices.py mv_analises_avancadas.sql
-streamlit run app.py
-```
-
-A carga completa leva de 40 min a 1h30, dependendo do disco. Para reaproveitar as tabelas bronze já carregadas:
-
-```powershell
-$env:CNPJ_SKIP_BRONZE = "1"      # PowerShell
-```
-```cmd
-set CNPJ_SKIP_BRONZE=1           :: cmd.exe
-```
-
-O ETL registra na primeira linha se a variável chegou até ele — no PowerShell, `set` cria variável de shell, não de ambiente, e o Python não enxerga.
+> ⚠️ A base de demonstração é **gerada**, com o mesmo esquema da real. Todo o código — consultas, views, testes — roda igual em cima dela, mas nenhum número ali descreve o Brasil. Para os números reais, veja [rodar sobre a base completa](#-rodar-sobre-a-base-completa).
 
 ---
 
 ## 🏗️ Arquitetura
 
 ```
-ZIPs da Receita
+ZIPs da Receita Federal
       │  COPY via stream, sem descompactar em disco
       ▼
   bronze_empresas · bronze_estabelecimentos · bronze_simples   (~75 GB, UNLOGGED)
@@ -117,31 +65,57 @@ ZIPs da Receita
   empresas_gold        66,7 M linhas · 1 linha por empresa (matriz)
       │  agregações pré-calculadas
       ▼
-  13 views materializadas
+  15 views materializadas
       │
       ▼
   Streamlit (app.py)
 ```
 
-**Query-First.** Nenhuma agregação acontece em pandas. `COUNT`, `SUM`, `percentile_cont` e `GROUP BY` rodam no banco; o Python recebe o resultado pronto. A versão antiga do painel puxava 30 mil linhas cruas com `LIMIT` sem `ORDER BY` e agregava em memória — o que não devolve uma amostra, devolve as primeiras linhas que o plano de execução produzir.
+Decisões que sustentam isso:
 
-### Portões de qualidade
+**Bronze em tablespace separado.** As tabelas intermediárias ocupam ~75 GB e são descartáveis. `CNPJ_TABLESPACE_DIR` manda elas para outro volume; a Gold, que é o que o dashboard lê, fica sempre no volume padrão.
 
-O `etl_cnpj.py` aborta a carga se qualquer um falhar — a transação inteira sofre rollback e a Gold anterior continua de pé:
+**`UNLOGGED` na bronze.** São tabelas de passagem — pagar WAL por elas é desperdício num carregamento de meia hora.
 
-| Portão | Regra | O que ele pega |
+**Views materializadas em vez de consulta ao vivo.** O painel responde em milissegundos sobre uma tabela de 66,7 M de linhas porque nunca a consulta diretamente.
+
+---
+
+## 🔬 Como sei que os números estão certos
+
+Análise sobre dezenas de milhões de registros tem um problema estrutural: **o dado não avisa quando o pipeline está errado**. Uma versão anterior deste projeto apurou sobrevivência média de 44,5 anos. O número passou por zero datas nulas, zero duplicatas, zero datas futuras — e estava uma ordem de grandeza fora do que o IBGE publica.
+
+Quem pegou foi a validação cruzada contra fonte externa, não a inspeção do dado. As três causas eram independentes e nenhuma delas é visível olhando a tabela:
+
+| Camada | Causa | Efeito |
+|---|---|---|
+| ETL | Cruzava `Empresas0.zip` com `Estabelecimentos0.zip` assumindo shard 0 ↔ shard 0. Empresas vem ordenado por CNPJ; Estabelecimentos vem embaralhado. | Interseção das primeiras 200 mil linhas de cada: **1 registro**. O pipeline rodava sobre 16% do país. |
+| Métrica | `hoje − data_abertura` sobre todas as empresas, inclusive as fechadas. | Media idade desde a fundação, não sobrevivência. |
+| Apresentação | Mediana nacional estimada como média ponderada das medianas dos 20 setores de maior mediana. | Viés de seleção somado a "média de medianas não é mediana". |
+
+**O que existe hoje por causa disso:**
+
+**Portões de qualidade.** O ETL aborta a carga e faz rollback se qualquer um falhar — a Gold anterior continua de pé:
+
+| Portão | Regra | O que pega |
 |---|---|---|
 | Linhas na Gold | > 40 M | Join que colapsou |
 | Retenção Gold/Empresas | > 90% | Perda silenciosa no join |
 | CNPJs duplicados | = 0 | Fan-out em algum join |
 | Datas nulas / fora de faixa | = 0 | Parsing de data quebrado |
-| **Concentração por década** | **< 60%** | **O bug de shard. A base antiga tinha 81%; a nova, 39,4%** |
+| **Concentração por década** | **< 60%** | **O desalinhamento de shards: a base errada tinha 81%; a correta, 39,4%** |
 | Cobertura Simples/MEI | > 20% | `LEFT JOIN` que não casou chave |
 | Baixadas sem motivo | < 50% | Coluna não carregada |
 
+**Testes de regressão nomeados pelo defeito.** Um falha se alguém voltar a derivar UF de `LEFT(cod_municipio, 2)` — o campo `municipio` da Receita é código interno da RFB, não IBGE, e São Paulo lá é 7107. Outro falha se alguma década voltar a concentrar mais de 60% da base. Outro se a sobrevivência voltar a contar empresas ativas.
+
+**Integração contra banco real.** Teste que mocka a resposta do PostgreSQL prova que o Python sabe ler o DataFrame que ele mesmo inventou — não que a consulta funciona. Os 21 testes de integração rodam SQL de verdade contra um Postgres de verdade, no CI.
+
+> **0% de datas inválidas não significa 0% de conclusões inválidas.** Validar o dado não é validar o pipeline.
+
 ---
 
-## 📊 O dashboard
+## 📈 O dashboard
 
 | Seção | Pergunta que responde |
 |---|---|
@@ -161,6 +135,8 @@ Duas decisões metodológicas atravessam todos os gráficos:
 
 **Ano parcial.** A base é uma foto mensal. Na competência de fevereiro/2026, o ano de 2026 tem dois meses de registros. Toda série temporal encerra no último ano completo; incluir o parcial desenha uma queda que não existe.
 
+Uma nota que vale para qualquer leitura: aqui "morreu" significa **baixa formal** no cadastro. Empresa que parou de operar e nunca deu baixa segue contada como viva. É pergunta diferente da que o IBGE responde (cessação de atividade) — e é por isso que as taxas de sobrevivência aqui são mais otimistas que as dele.
+
 ---
 
 ## 🧪 Testes
@@ -173,9 +149,45 @@ CNPJ_TEST_DSN=postgresql://cnpj:cnpj_local@localhost:5432/cnpj \
   python -m pytest tests/test_integracao_mvs.py -v
 ```
 
-**104 testes.** Os de integração são regressões dos bugs reais do projeto: um falha se alguém voltar a derivar UF de `LEFT(cod_municipio, 2)` (o campo `municipio` da Receita é código interno da RFB, não IBGE — São Paulo é 7107), outro se alguma década voltar a concentrar mais de 60% da base, outro se a sobrevivência voltar a contar empresas ativas.
+O CI roda os dois níveis a cada push, contra um PostgreSQL provisionado no runner, e termina renderizando o dashboard inteiro pelo `AppTest` do Streamlit.
 
-Rodam contra um PostgreSQL de verdade por decisão: um teste que mocka a resposta do banco prova que o Python sabe ler o DataFrame que ele mesmo inventou, não que a consulta funciona. O CI ainda renderiza o dashboard inteiro pelo `AppTest` do Streamlit, para pegar gráfico que quebra em tela sem quebrar no import.
+---
+
+## 🗄️ Rodar sobre a base completa
+
+**1.** Baixe uma competência em [dados abertos da Receita](https://dadosabertos.rfb.gov.br/CNPJ/): `Empresas0..9.zip`, `Estabelecimentos0..9.zip`, `Simples.zip`, `Cnaes.zip`, `Municipios.zip`, `Naturezas.zip`, `Motivos.zip`.
+
+**2.** Configure o `.env`:
+
+```ini
+DATABASE_URL=postgresql://usuario:senha@localhost:5432/cnpj
+CNPJ_DIR=C:\caminho\para\os\zips
+CNPJ_COMPETENCIA=2026-02-28
+CNPJ_TABLESPACE_DIR=D:\cnpj\pgdata     # opcional: bronze em outro volume
+```
+
+**3.** Execute:
+
+```bash
+python carregar_referencias.py                       # CNAEs, municípios, motivos
+python etl_cnpj.py                                   # bronze → gold, com portões
+python aplicar_indices.py mv_base_dashboard.sql
+python aplicar_indices.py mv_correcoes_painel.sql
+python aplicar_indices.py mv_analises_sobrevivencia.sql
+python aplicar_indices.py mv_analises_avancadas.sql
+streamlit run app.py
+```
+
+Carga completa: 40 min a 1h30, dependendo do disco. Para reaproveitar bronze já carregada:
+
+```powershell
+$env:CNPJ_SKIP_BRONZE = "1"      # PowerShell
+```
+```cmd
+set CNPJ_SKIP_BRONZE=1           :: cmd.exe
+```
+
+O ETL registra na primeira linha se a variável chegou até ele — no PowerShell, `set` cria variável de shell, não de ambiente.
 
 ---
 
@@ -191,23 +203,21 @@ Analise_CNPJ/
 ├── aplicar_indices.py              # executa arquivos .sql avulsos
 ├── refresh_views.py                # REFRESH das views materializadas
 ├── benchmark_queries.py            # medição das consultas do painel
-├── metricas_post.py                # números de divulgação, apurados na base inteira
-├── diagnostico_dashboard.py        # prova numérica dos bugs de apresentação
+├── metricas_post.py                # apuração dos números sobre a base inteira
+├── diagnostico_dashboard.py        # verificação numérica das métricas do painel
 ├── diagnostico_tablespace.py       # diagnóstico do tablespace das bronze
 ├── demo/                           # base sintética para rodar sem os dados reais
 ├── tests/                          # unidade + integração
 └── *.sql                           # definição das views materializadas
 ```
 
----
-
 ## 🛠️ Stack
 
-PostgreSQL 16+ · Python 3.11+ · Streamlit · Plotly · SQLAlchemy · psycopg2 · pandas · pytest · Docker
+PostgreSQL 16+ · Python 3.11+ · Streamlit · Plotly · SQLAlchemy · psycopg2 · pandas · pytest · Docker · GitHub Actions
 
 ## 📄 Fonte dos dados
 
-[Dados abertos do CNPJ — Receita Federal](https://dadosabertos.rfb.gov.br/CNPJ/). Dados públicos, sem informação pessoal de sócios pessoa física neste recorte. Competência de referência da carga atual: fevereiro/2026.
+[Dados abertos do CNPJ — Receita Federal](https://dadosabertos.rfb.gov.br/CNPJ/). Dados públicos, sem informação pessoal de sócios pessoa física neste recorte. Competência de referência: fevereiro/2026.
 
 ## 👤 Autor
 
