@@ -9,7 +9,9 @@ import plotly.express as px
 import plotly.graph_objects as go
 import json
 import bcrypt
-from comparador_regional import render_comparador
+from plotly.subplots import make_subplots
+from comparador_regional import render_comparador, UF_NOME
+from cnae import nome_divisao, nome_secao
 
 # --- CONFIGURAÇÃO DE CONEXÃO ---
 # Uma única cadeia de resolução da credencial, em database.py: DATABASE_URL do
@@ -206,6 +208,28 @@ def curva_de_sobrevivencia(df_coortes: pd.DataFrame, coorte: int) -> pd.DataFram
         vivas = total - acumuladas
         linhas.append({"anos": t, "vivas": vivas, "pct": 100.0 * vivas / total})
     return pd.DataFrame(linhas)
+
+
+@st.cache_data(ttl=3600)
+def carregar_natalidade_por_uf(ufs: tuple[str, ...]) -> pd.DataFrame:
+    """Uma linha por (UF, ano) — preserva a identidade de cada estado.
+
+    A versão anterior desta tela somava as UFs selecionadas num único total.
+    Escolher AC, CE e DF devolvia uma série só, e o gráfico respondia "quanto
+    esses três juntos abriram", que não é a pergunta de quem seleciona três
+    estados para comparar. Aqui o SUM desapareceu: cada UF volta separada e a
+    tela desenha um painel por estado.
+    """
+    sql = text("""
+        SELECT uf, ano, aberturas, baixas, saldo
+        FROM mv_natalidade_mortalidade
+        WHERE uf = ANY(:ufs) AND ano BETWEEN 1990 AND :ano_fim
+        ORDER BY uf, ano
+    """)
+    with engine.connect() as conn:
+        return pd.read_sql(
+            sql, conn, params={"ufs": list(ufs), "ano_fim": ULTIMO_ANO_COMPLETO}
+        )
 
 
 @st.cache_data(ttl=3600)
@@ -833,20 +857,23 @@ section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] hr {
                 k2.metric("💰 Capital Total", f"R$ {capital_total:,.2f}")
                 k3.metric("📐 Capital Mediano", f"R$ {capital_mediano:,.2f}")
 
+            # Nota sobre o "\$": no markdown do Streamlit, dois cifrões na mesma
+            # string abrem e fecham uma fórmula LaTeX. "R$ 500 bilhões … R$ 999"
+            # era exibido em fonte de fórmula, com os cifrões sumidos. Escapado,
+            # o cifrão aparece como cifrão.
             legenda = (
-                "Recorte inteiro da base, com capital social maior que zero — "
-                "não uma amostra. **Mediana, não média**: capital social tem "
-                "cauda pesadíssima, e a média nacional (R$ 5,7 milhões) "
-                "descreve as holdings do topo, não a empresa brasileira típica."
+                "Toda a base, não uma amostra. O capital aqui é a **mediana**: "
+                "metade das empresas abre com menos que isso. A média seria "
+                "R\\$ 2,5 milhões — puxada por um punhado de empresas gigantes, "
+                "ela não descreve nenhuma empresa típica."
             )
             if sentinelas:
                 legenda += (
-                    f"\n\nExcluídas {sentinelas:,} empresas".replace(",", ".")
-                    + " com capital acima de R$ 500 bilhões — boa parte com "
-                    "exatamente R$ 999.999.999.999,00, doze noves, o teto do "
-                    "campo. Não é capital, é preenchimento: essas poucas linhas "
-                    "respondiam por 56,6% do valor declarado do país. As "
-                    "empresas continuam contadas; apenas o valor sai da soma."
+                    f"\n\n{sentinelas:,} empresas".replace(",", ".")
+                    + " com capital acima de R\\$ 500 bilhões ficam fora da "
+                    "soma: é campo preenchido até o limite, não capital "
+                    "declarado. Elas seguem contadas em *Empresas "
+                    "identificadas*."
                 )
             st.caption(legenda)
 
@@ -862,17 +889,64 @@ section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] hr {
                 )
                 st.plotly_chart(fig_l, width="stretch")
                 st.caption(
-                    f"Série encerra em {ULTIMO_ANO_COMPLETO}. A competência da base é "
-                    f"{COMPETENCIA:%m/%Y}, então {COMPETENCIA.year} tem apenas "
-                    "os primeiros meses do ano e cairia como se fosse queda real."
+                    f"A base é a foto de {COMPETENCIA:%m/%Y}, então a série vai "
+                    f"até {ULTIMO_ANO_COMPLETO} — o último ano completo."
                 )
 
             with col_dir:
                 st.subheader("🏙️ Capital por Cidade (Top 10)")
-                fig_p = px.pie(
-                    df_top_cidades, names="cidade", values="capital_total", hole=0.4
+                # Era um donut. Com São Paulo em 91,5% do capital, o donut vira
+                # um círculo cheio com nove fatias invisíveis na borda e uma
+                # legenda que ninguém consegue ligar a fatia nenhuma — a
+                # dominância some justamente porque é grande demais.
+                #
+                # Barra horizontal ordenada resolve: o comprimento é comparável
+                # à primeira olhada, os nomes ficam ao lado de cada barra em vez
+                # de numa legenda, e o percentual vai escrito no fim da barra.
+                d = df_top_cidades.copy().sort_values("capital_total")
+                total_capital = float(d["capital_total"].sum())
+                d["pct"] = 100.0 * d["capital_total"] / total_capital
+
+                fig_p = go.Figure(go.Bar(
+                    x=d["capital_total"], y=d["cidade"], orientation="h",
+                    marker=dict(color="#3987e5"),
+                    text=d["pct"].map(lambda v: f"{v:.1f}%"),
+                    textposition="outside",
+                    cliponaxis=False, constraintext="none",
+                    customdata=d["capital_total"],
+                    hovertemplate=(
+                        "<b>%{y}</b><br>R$ %{customdata:,.0f}<extra></extra>"
+                    ),
+                ))
+                fig_p.update_layout(
+                    template="plotly_dark", height=380,
+                    xaxis_title="Capital somado (R$)", yaxis_title="",
+                    margin=dict(t=10, l=10, r=70, b=30),
+                    showlegend=False,
                 )
+                # Eixo linear começando em zero, e é deliberado.
+                #
+                # A tentação aqui é escala logarítmica, porque São Paulo sozinha
+                # tem quase todo o capital e as outras nove viram traços. Mas o
+                # que uma barra comunica é COMPRIMENTO a partir do zero: no eixo
+                # log, uma diferença de 1,3x é desenhada do tamanho de uma de
+                # 20x. Seria trocar um gráfico que esconde a concentração por um
+                # que a disfarça.
+                #
+                # Nove barras curtas são a informação. Cada uma tem o nome ao
+                # lado e o percentual escrito na ponta, então ninguém precisa
+                # medir barra nenhuma para ler o número.
+                fig_p.update_xaxes(rangemode="tozero", showgrid=True,
+                                   gridcolor="rgba(255,255,255,0.08)")
                 st.plotly_chart(fig_p, width="stretch")
+
+                lider = d.iloc[-1]
+                st.caption(
+                    f"Percentual sobre o capital destas dez cidades. "
+                    f"**{lider['cidade'].title()}** concentra "
+                    f"{lider['pct']:.1f}% — as barras curtas não são erro de "
+                    "escala, é a distribuição."
+                )
 
             st.divider()
 
@@ -999,30 +1073,56 @@ section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] hr {
         df_tree = carregar_treemap_setores()
 
         if not df_tree.empty:
+            # Duas mudanças em relação à versão anterior, pelo mesmo motivo.
+            #
+            # (1) Os blocos exibiam "47", "56", "94" — códigos de divisão da
+            #     CNAE. Número de classificação não é rótulo: só quem está com a
+            #     tabela aberta ao lado sabe que 47 é comércio varejista.
+            #
+            # (2) A hierarquia era Brasil → divisão, um nível só. Clicar num
+            #     bloco apenas ampliava o retângulo, sem revelar nada — a
+            #     interação existia sem ter para onde ir. Com Seção → Divisão,
+            #     clicar em "Comércio" abre atacado, varejo e veículos.
+            df_tree = df_tree.copy()
+            df_tree["setor"] = df_tree["divisao_cnae"].map(nome_divisao)
+            df_tree["secao"] = df_tree["divisao_cnae"].map(nome_secao)
+
             fig_tree = px.treemap(
                 df_tree,
-                path=[px.Constant("Brasil"), "divisao_cnae"],
+                path=[px.Constant("Brasil"), "secao", "setor"],
                 values="total_empresas",
                 color="capital_total",
                 color_continuous_scale="Blues",
-                hover_data={"capital_total": ":,.0f", "total_empresas": ":,"},
-                labels={
-                    "total_empresas": "Empresas",
-                    "capital_total": "Capital Total (R$)",
-                    "divisao_cnae": "Divisão CNAE",
-                },
-                title="Empresas por Divisão de CNAE",
+                custom_data=["capital_total"],
+                title="Empresas por setor — clique para abrir uma seção",
             )
             fig_tree.update_traces(
+                # Só o rótulo e a contagem no bloco. Capital vai para o hover:
+                # três números empilhados em retângulos de tamanhos muito
+                # diferentes viram ruído nos blocos pequenos.
                 texttemplate="<b>%{label}</b><br>%{value:,} empresas",
+                # 2 px de fundo entre blocos — separa vizinhos de cor parecida
+                # sem desenhar borda.
+                marker=dict(line=dict(width=2, color="#0e1117")),
                 hovertemplate=(
                     "<b>%{label}</b><br>"
                     "Empresas: %{value:,}<br>"
-                    "Capital Total: R$ %{customdata[0]:,.0f}<extra></extra>"
+                    "Capital total: R$ %{customdata[0]:,.0f}"
+                    "<extra></extra>"
                 ),
             )
-            fig_tree.update_layout(margin=dict(t=50, l=10, r=10, b=10))
+            fig_tree.update_layout(
+                margin=dict(t=50, l=10, r=10, b=10),
+                coloraxis_colorbar=dict(title="Capital<br>total (R$)"),
+            )
             st.plotly_chart(fig_tree, width="stretch")
+            st.caption(
+                "O tamanho do bloco é a quantidade de empresas; a cor é o "
+                "capital social somado. Os dois quase não andam juntos — "
+                "comércio varejista tem o maior número de empresas do país e "
+                "uma cor pálida, enquanto construção de edifícios ocupa uma "
+                "faixa estreita e escura."
+            )
         else:
             st.info("Nenhum setor encontrado para o treemap.")
     except Exception as e_tree:
@@ -1342,47 +1442,123 @@ section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] hr {
                 default=[],
                 key="ufs_natalidade",
             )
-            df_nat = carregar_natalidade(tuple(ufs_nat))
-            df_nat = df_nat[df_nat["ano"] >= 2000]
+            # Cores validadas para fundo escuro (slots 1 e 8 da paleta
+            # categórica). As anteriores, #2166ac e #b2182b, são passos claros
+            # demais para o papel e escuros demais para o fundo #0e1117 — a
+            # barra vermelha quase encostava no fundo.
+            COR_ABERTURAS = "#3987e5"
+            COR_BAIXAS = "#e66767"
+            COR_SALDO = "#c3c2b7"
+            LIMITE_PAINEIS = 4
 
-            fig_nat = go.Figure()
-            fig_nat.add_trace(go.Bar(
-                x=df_nat["ano"], y=df_nat["aberturas"], name="Aberturas",
-                marker_color="#2166ac",
-                hovertemplate="%{x}<br>Aberturas: %{y:,}<extra></extra>",
-            ))
-            fig_nat.add_trace(go.Bar(
-                x=df_nat["ano"], y=-df_nat["baixas"], name="Baixas",
-                marker_color="#b2182b", customdata=df_nat["baixas"],
-                hovertemplate="%{x}<br>Baixas: %{customdata:,}<extra></extra>",
-            ))
-            fig_nat.add_trace(go.Scatter(
-                x=df_nat["ano"], y=df_nat["saldo"], name="Saldo líquido",
-                mode="lines+markers", line=dict(color="#f7f7f7", width=2.5),
-                hovertemplate="%{x}<br>Saldo: %{y:,}<extra></extra>",
-            ))
-            fig_nat.add_hline(y=0, line_color="rgba(255,255,255,0.4)")
-            fig_nat.update_layout(
-                template="plotly_dark", height=460, barmode="relative",
-                xaxis_title="Ano", yaxis_title="Empresas",
-                hovermode="x unified",
-                legend=dict(orientation="h", yanchor="bottom", y=1.02,
-                            xanchor="right", x=1),
-            )
-            st.plotly_chart(fig_nat, width="stretch")
+            def _tracos_natalidade(d: pd.DataFrame, mostrar_legenda: bool):
+                """Os três traços de um painel: aberturas, baixas, saldo."""
+                return [
+                    go.Bar(
+                        x=d["ano"], y=d["aberturas"], name="Aberturas",
+                        marker_color=COR_ABERTURAS, showlegend=mostrar_legenda,
+                        legendgroup="ab",
+                        hovertemplate="%{x}<br>Aberturas: %{y:,}<extra></extra>",
+                    ),
+                    go.Bar(
+                        x=d["ano"], y=-d["baixas"], name="Baixas",
+                        marker_color=COR_BAIXAS, customdata=d["baixas"],
+                        showlegend=mostrar_legenda, legendgroup="bx",
+                        hovertemplate="%{x}<br>Baixas: %{customdata:,}<extra></extra>",
+                    ),
+                    go.Scatter(
+                        x=d["ano"], y=d["saldo"], name="Saldo líquido",
+                        mode="lines+markers",
+                        line=dict(color=COR_SALDO, width=2),
+                        marker=dict(size=5),
+                        showlegend=mostrar_legenda, legendgroup="sl",
+                        hovertemplate="%{x}<br>Saldo: %{y:,}<extra></extra>",
+                    ),
+                ]
 
-            negativos = df_nat[df_nat["saldo"] < 0]["ano"].tolist()
-            recorte = ", ".join(ufs_nat) if ufs_nat else "Brasil"
+            if len(ufs_nat) >= 2:
+                # PAINEL POR ESTADO.
+                #
+                # Selecionar três UFs somava as três numa série só — o gráfico
+                # respondia "quanto AC, CE e DF juntos abriram", que não é a
+                # pergunta de quem escolheu três estados. Empilhar estados na
+                # mesma barra também não serviria: as escalas são muito
+                # diferentes (SP tem ~20x o Acre) e o menor vira uma linha.
+                #
+                # Um painel por estado, cada um com sua própria escala de Y,
+                # deixa comparar a FORMA da série — que é o que interessa aqui,
+                # já que o volume absoluto entre estados é conhecido de antemão.
+                exibidas = ufs_nat[:LIMITE_PAINEIS]
+                df_uf = carregar_natalidade_por_uf(tuple(exibidas))
+                df_uf = df_uf[df_uf["ano"] >= 2000]
+
+                fig_nat = make_subplots(
+                    rows=len(exibidas), cols=1, shared_xaxes=True,
+                    vertical_spacing=0.06,
+                    subplot_titles=[UF_NOME.get(u, u) for u in exibidas],
+                )
+                for i, uf in enumerate(exibidas, start=1):
+                    d = df_uf[df_uf["uf"] == uf]
+                    for traco in _tracos_natalidade(d, mostrar_legenda=(i == 1)):
+                        fig_nat.add_trace(traco, row=i, col=1)
+                    fig_nat.add_hline(
+                        y=0, line_color="rgba(255,255,255,0.35)", row=i, col=1
+                    )
+
+                fig_nat.update_layout(
+                    template="plotly_dark", barmode="relative",
+                    height=230 * len(exibidas) + 90,
+                    hovermode="x unified",
+                    legend=dict(orientation="h", yanchor="bottom", y=1.03,
+                                xanchor="right", x=1),
+                    margin=dict(t=90, b=40),
+                )
+                fig_nat.update_xaxes(title_text="Ano", row=len(exibidas), col=1)
+                fig_nat.update_yaxes(title_text="Empresas")
+                st.plotly_chart(fig_nat, width="stretch")
+
+                if len(ufs_nat) > LIMITE_PAINEIS:
+                    ficaram_de_fora = ", ".join(ufs_nat[LIMITE_PAINEIS:])
+                    st.warning(
+                        f"Mostrando as {LIMITE_PAINEIS} primeiras UFs. Fora do "
+                        f"gráfico: **{ficaram_de_fora}**. Acima de quatro "
+                        "painéis nenhum deles fica alto o bastante para se ler."
+                    )
+                st.caption(
+                    "Um painel por estado, **cada um com sua própria escala** — "
+                    "serve para comparar o formato da série, não o tamanho. "
+                    "Aberturas para cima, baixas para baixo, saldo na linha "
+                    "clara."
+                )
+            else:
+                df_nat = carregar_natalidade(tuple(ufs_nat))
+                df_nat = df_nat[df_nat["ano"] >= 2000]
+
+                fig_nat = go.Figure(_tracos_natalidade(df_nat, True))
+                fig_nat.add_hline(y=0, line_color="rgba(255,255,255,0.4)")
+                fig_nat.update_layout(
+                    template="plotly_dark", height=460, barmode="relative",
+                    xaxis_title="Ano", yaxis_title="Empresas",
+                    hovermode="x unified",
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                                xanchor="right", x=1),
+                )
+                st.plotly_chart(fig_nat, width="stretch")
+
+                negativos = df_nat[df_nat["saldo"] < 0]["ano"].tolist()
+                recorte = ufs_nat[0] if ufs_nat else "Brasil"
+                st.caption(
+                    f"{recorte}: aberturas para cima, baixas para baixo, saldo "
+                    "líquido na linha clara. "
+                    + (f"Fecharam mais empresas do que abriram em: "
+                       f"{', '.join(map(str, negativos))}."
+                       if negativos else "Nenhum ano com saldo negativo.")
+                )
+
             st.caption(
-                f"{recorte}: aberturas para cima, baixas para baixo, saldo líquido "
-                "na linha branca. "
-                + (f"Anos em que fecharam mais empresas do que abriram: "
-                   f"{', '.join(map(str, negativos))}."
-                   if negativos else "Nenhum ano com saldo negativo no período.")
-                + " Limite metodológico: isto é uma foto da base atual, não um "
-                "registro histórico de eventos. Empresas que a Receita já removeu "
-                "do cadastro não aparecem em ano nenhum, e o efeito é maior quanto "
-                "mais antigo o ano."
+                "Isto é uma foto da base de hoje, não um registro histórico. "
+                "Empresa que a Receita já apagou do cadastro não aparece em ano "
+                "nenhum — quanto mais antigo o ano, mais faltou."
             )
 
         except Exception as e_nat:
@@ -1462,23 +1638,15 @@ section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] hr {
                         },
                     )
                     st.caption(
-                        "MEI é lido antes de Simples: todo MEI é optante do Simples, "
-                        "então sem essa precedência o recorte MEI desapareceria "
-                        "dentro do Simples.\n\n"
-                        "**O regime vem do histórico, não do cadastro de hoje.** "
-                        "A Receita marca como optante do MEI apenas quem está "
-                        "no regime agora — quem fechou saiu do registro. Dos "
-                        "16,5 milhões de CNPJs marcados como MEI hoje, 229 "
-                        "constam como baixados. Classificar por essa marca "
-                        "montaria um grupo \"MEI\" só de empresas vivas, e a "
-                        "sobrevivência daria 100% por construção. Esta tela usa "
-                        "a data de adesão, que a Receita preserva depois da baixa.\n\n"
-                        "**\"Fora do Simples\" é categoria, não dado faltando.** "
-                        "O arquivo do Simples lista quem aderiu ao regime alguma "
-                        "vez — 47,2 milhões de linhas, todas com data de adesão. "
-                        "Estar ausente dele é informação completa: a empresa "
-                        "nunca passou pelo Simples, e portanto apura por lucro "
-                        "presumido ou real. É o grupo de comparação."
+                        "O regime é o que a empresa **já foi**, pela data de "
+                        "adesão — não o que ela é hoje. Quem fecha sai do "
+                        "registro do Simples, então o cadastro atual só enxerga "
+                        "sobrevivente.\n\n"
+                        "**MEI** vem antes de **Simples** porque todo MEI é "
+                        "optante do Simples; sem essa ordem o recorte MEI "
+                        "sumiria dentro do outro. **Fora do Simples** são as "
+                        "empresas que nunca aderiram ao regime — lucro "
+                        "presumido ou real."
                     )
                 except Exception as e_reg:
                     st.error(f"❌ Erro no regime tributário: {e_reg}")
@@ -1598,24 +1766,13 @@ section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] hr {
                         )
                         st.caption(
                             f"Safra de {safra_cr}, sobrevivência aos 5 anos: {resumo}.\n\n"
-                            "Comparar regimes **dentro da mesma safra** é o que torna a "
-                            "conta honesta. O MEI existe desde 2008: numa comparação "
-                            "solta, ele apareceria com sobrevivência pior só por ser "
-                            "composto de empresas jovens, enquanto o regime normal "
-                            "carrega companhias que tiveram décadas para se consolidar. "
-                            "Fixando a safra, as três curvas partem do mesmo ponto no "
-                            "tempo e a diferença que sobra é do regime, não da idade.\n\n"
-                            "Este gráfico já esteve errado duas vezes, e as duas "
-                            "valem a pena. Primeiro ele exibiu MEI e Simples parados "
-                            "em **100,0%** aos 5 anos contra 48% do regime normal — "
-                            "tautologia, porque o recorte usava a marca de optante "
-                            "ATUAL, que só sobrevivente carrega. Depois, já "
-                            "corrigido, ele ainda descartava 19,5 milhões de "
-                            "empresas sob o rótulo \"Não informado\": eram as que "
-                            "não constam do arquivo do Simples, ou seja, exatamente "
-                            "o grupo que nunca aderiu ao regime — o controle da "
-                            "comparação. Hoje há um portão de qualidade e testes de "
-                            "regressão em cima dos dois."
+                            "Todas as empresas do gráfico abriram no mesmo ano, e "
+                            "é isso que torna a comparação possível. O MEI só "
+                            "existe desde 2008: solto, ele pareceria frágil "
+                            "apenas por ser composto de empresas jovens. Fixando "
+                            "a safra, as três curvas partem juntas e o que "
+                            "sobra de diferença é do regime, não da idade. "
+                            "Arraste a safra para ver se o padrão se repete."
                         )
             except Exception as e_cr:
                 st.error(f"❌ Erro na comparação por regime: {e_cr}")
@@ -1624,12 +1781,16 @@ section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] hr {
 
     # --- SOCIEDADE ---
     st.title("🤝 Sociedade e Sobrevivência")
+    # A legenda anterior explicava exatamente quais campos de pessoa física
+    # existem no arquivo de origem e onde eles ficam. Era verdade e era
+    # desnecessária: descrever o caminho até um dado sensível é um convite, e a
+    # garantia que interessa ao leitor não depende disso. A política está
+    # documentada no README e imposta por teste de integração; a tela só precisa
+    # dizer o que ela mostra.
     st.caption(
-        "Empresa de sócio único morre mais? A base permite responder — e "
-        "**nenhum sócio é identificado aqui**. O arquivo de Sócios da Receita "
-        "traz nome e CPF de pessoas físicas; esses campos ficam na camada bronze "
-        "e não chegam à tabela consultada pelo dashboard, que recebe apenas "
-        "contagens."
+        "Empresa de sócio único morre mais? Esta seção trabalha apenas com a "
+        "**quantidade** de sócios — nenhuma pessoa é identificada em nenhum "
+        "ponto do dashboard."
     )
 
     if "mv_sobrevivencia_socios" not in mvs:
