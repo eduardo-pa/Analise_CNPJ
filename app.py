@@ -951,24 +951,36 @@ section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] hr {
             st.divider()
 
             # TABELA RANKING
-            st.subheader("🏆 Maiores Empresas do Recorte")
+            st.subheader("🏆 Maiores capitais sociais declarados")
             n_rank = st.select_slider(
                 "Registros exibidos",
                 options=[10, 25, 50, 100],
                 value=25,
             )
 
+            # A coluna `porte` está aqui de propósito, e é o ponto da tabela.
+            #
+            # Ordenar 66 milhões de empresas por capital social não produz um
+            # ranking das maiores empresas do Brasil: produz um ranking dos
+            # maiores erros de digitação. O campo é autodeclarado e não passa por
+            # conferência, então o topo é ocupado por microempresas com valores
+            # na casa das centenas de bilhões.
+            #
+            # Filtrar até parecer plausível seria escolher um número arbitrário e
+            # apresentar o resultado como se fosse fato. Exibir o porte ao lado
+            # do valor resolve honestamente: "Microempresa, R$ 432 bilhões" se
+            # explica sozinho, e mostra ao leitor exatamente por que nenhuma
+            # métrica deste painel usa soma ou média de capital.
             sql_rank = """
-                SELECT e.razao_social, e.capital_social, e.data_abertura,
+                SELECT e.razao_social, e.porte, e.capital_social, e.data_abertura,
                        c.descricao AS setor, m.descricao AS cidade
                 FROM empresas_gold e
                 LEFT JOIN cnaes_referencia      c ON e.cnae_fiscal   = c.codigo
                 LEFT JOIN municipios_referencia m ON e.cod_municipio = m.codigo
                 WHERE e.capital_social > 0
-                  -- Sem este filtro o ranking era uma lista de holdings com
-                  -- R$ 999.999.999.999,00 — o mesmo número repetido dezenas de
-                  -- vezes, todas na mesma cidade. Ordenar por capital coloca o
-                  -- preenchimento no topo antes de qualquer empresa real.
+                  -- Corta o fisicamente impossível (acima de R$ 250 bilhões, mais
+                  -- que a Petrobras). O que sobra acima disso ainda tem erro, e é
+                  -- por isso que o porte aparece na tabela.
                   AND NOT e.capital_sentinela
             """
             params_rank: dict = {}
@@ -988,10 +1000,39 @@ section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] hr {
                 df_rank,
                 width="stretch", hide_index=True,
                 column_config={
-                    "capital_social": st.column_config.NumberColumn("Capital (R$)", format="R$ %.2f"),
-                    "data_abertura": st.column_config.DateColumn("Abertura")
+                    "razao_social": "Razão social",
+                    "porte": "Porte",
+                    "capital_social": st.column_config.NumberColumn(
+                        "Capital declarado (R$)", format="R$ %.2f"),
+                    "data_abertura": st.column_config.DateColumn("Abertura"),
+                    "setor": "Setor",
+                    "cidade": "Cidade",
                 }
             )
+
+            micros = int((df_rank["porte"] == "Microempresa").sum())
+            aviso = (
+                "**Isto não é um ranking das maiores empresas do Brasil.** "
+                "Capital social na base da Receita é autodeclarado e não passa "
+                "por conferência, então ordenar 66 milhões de linhas por esse "
+                "campo traz ao topo os maiores erros de digitação."
+            )
+            if micros:
+                aviso += (
+                    f" Note a coluna **Porte**: {micros} das {len(df_rank)} "
+                    "empresas listadas são **microempresas**, que têm teto de "
+                    "receita de R\\$ 360 mil por ano. Uma microempresa com "
+                    "centenas de bilhões de capital é erro de preenchimento, "
+                    "não uma descoberta."
+                )
+            aviso += (
+                "\n\nDeixei a tabela assim de propósito. Filtrar até parecer "
+                "plausível seria escolher um número arbitrário e apresentar o "
+                "resultado como fato — e é exatamente por causa desta "
+                "distribuição que nenhuma métrica deste painel usa soma ou "
+                "média de capital."
+            )
+            st.caption(aviso)
 
             today = date.today().strftime("%Y%m%d")
 

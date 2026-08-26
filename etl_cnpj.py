@@ -400,19 +400,34 @@ def recriar_dependentes(cur, capturado):
 # A desproporção é o ponto: 0,00025% das linhas movendo mais da metade de um
 # agregado nacional. Nenhuma checagem de completude ou de tipo pega isso.
 #
-# Para calibrar: a maior capitalização social legítima do Brasil está na ordem
-# de R$ 200 bilhões (Petrobras). R$ 500 bilhões é mais que o dobro disso e
-# ainda assim fica abaixo dos doze noves — o corte pega o preenchimento sem
-# encostar em nenhuma empresa real.
+# Calibragem: a maior capitalização social legítima do Brasil é a da Petrobras,
+# na ordem de R$ 205 bilhões. Itaú e Vale ficam abaixo de R$ 100 bilhões. Não
+# existe empresa brasileira acima de R$ 250 bilhões de capital social, então
+# esse é o corte — 20% acima do maior caso real, e nenhuma empresa verdadeira
+# encosta nele.
 #
-# O primeiro valor escrito aqui foi R$ 1 trilhão, e ele não pegava nada:
-# 999.999.999.999 é exatamente um centavo MENOR que um trilhão. Um limiar
-# redondo escolhido "com folga" em cima de um sentinela que é o teto de um
-# campo passa por baixo dele. A folga tem que ficar do lado de dentro.
+# HISTÓRICO DESTE NÚMERO, porque ele erra de dois jeitos diferentes:
+#
+#   R$ 1 trilhão  — não pegava NADA. 999.999.999.999 é um centavo MENOR que um
+#                   trilhão. Limiar redondo escolhido "com folga" por cima de um
+#                   sentinela que é o teto de um campo passa por baixo dele.
+#
+#   R$ 500 bi     — pegava os doze noves e deixava passar uma faixa inteira de
+#                   valores igualmente impossíveis. O ranking de maiores
+#                   empresas ainda abria com um DEPÓSITO DE LENHA E CARVÃO
+#                   declarando R$ 432 bilhões, e com valores quase idênticos
+#                   (432,07 / 432,06 / 432,05 / 431,07 bi) em empresas sem
+#                   relação nenhuma entre si, em cidades diferentes.
+#
+# Nenhum limiar resolve isto sozinho: erro de digitação em campo autodeclarado
+# é contínuo, e abaixo de R$ 250 bi ainda existem valores absurdos misturados
+# com valores reais. O corte remove o fisicamente impossível; o resto é tratado
+# exibindo o PORTE ao lado do capital, para que o leitor veja por que não deve
+# confiar no número — ver a tabela de maiores empresas no app.py.
 #
 # A linha NÃO é excluída da Gold — a empresa existe e conta em toda análise que
 # não seja de capital. O que se marca é que o VALOR do capital é inutilizável.
-LIMIAR_CAPITAL_SENTINELA = 500_000_000_000
+LIMIAR_CAPITAL_SENTINELA = 250_000_000_000
 
 SQL_GOLD = """
 DROP TABLE IF EXISTS empresas_gold CASCADE;
@@ -422,6 +437,18 @@ SELECT
     e.cnpj_basico,
     e.razao_social,
     NULLIF(e.natureza_juridica, '')::bigint                       AS natureza_juridica,
+    -- Porte declarado: 01 = microempresa, 03 = pequeno porte, 05 = demais,
+    -- 00 ou vazio = não informado.
+    --
+    -- Entrou na Gold para dar contexto ao capital social. Uma microempresa tem
+    -- teto de receita bruta de R$ 360 mil por ano; quando uma delas aparece
+    -- declarando R$ 432 bilhões de capital, o porte ao lado do valor explica
+    -- sozinho que aquilo é erro de digitação, sem precisar de nota de rodapé.
+    CASE NULLIF(e.porte_empresa, '')
+         WHEN '01' THEN 'Microempresa'
+         WHEN '03' THEN 'Pequeno porte'
+         WHEN '05' THEN 'Demais'
+         ELSE           'Não informado' END                       AS porte,
     COALESCE(replace(e.capital_social, ',', '.')::numeric, 0)     AS capital_social,
     -- Ver LIMIAR_CAPITAL_SENTINELA acima. Marca o valor como inutilizável sem
     -- apagá-lo e sem remover a empresa.
@@ -467,7 +494,7 @@ SELECT
     COALESCE(so.qtd_socios_pf, 0) AS qtd_socios_pf
 FROM (
     SELECT lpad(cnpj_basico, 8, '0') AS cnpj_basico,
-           razao_social, natureza_juridica, capital_social
+           razao_social, natureza_juridica, capital_social, porte_empresa
     FROM bronze_empresas
 ) e
 JOIN (
@@ -662,6 +689,12 @@ INFORMATIVOS = [
 
     ("Empresas fora do arquivo do Simples",
      "SELECT count(*) FROM empresas_gold WHERE foi_simples IS NULL"),
+
+    # A faixa que o limiar NÃO pega e que continua sendo impossível. Serve para
+    # dimensionar o problema residual, não para ser corrigida automaticamente.
+    ("Microempresas declarando mais de R$ 100 milhões de capital",
+     "SELECT count(*) FROM empresas_gold "
+     "WHERE porte = 'Microempresa' AND capital_social > 100000000"),
 ]
 
 

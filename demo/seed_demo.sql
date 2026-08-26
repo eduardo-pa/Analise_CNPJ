@@ -114,13 +114,23 @@ SELECT
     'EMPRESA DEMONSTRACAO ' || i                                 AS razao_social,
     (ARRAY[2062, 2135, 2305, 4014])[1 + (random() * 3)::int]::bigint
                                                                  AS natureza_juridica,
+    -- Porte declarado. As microempresas recebem de propósito uma fatia dos
+    -- capitais absurdos: é a combinação "Microempresa + centenas de bilhões"
+    -- que a tabela de maiores capitais exibe para explicar por que o campo não
+    -- é confiável, e sem ela o teste que a defende não exercitaria nada.
+    CASE WHEN r_capital >= 0.9995 THEN 'Microempresa'
+         WHEN r_socios  <  0.46   THEN 'Microempresa'
+         WHEN r_socios  <  0.70   THEN 'Pequeno porte'
+         WHEN r_socios  <  0.95   THEN 'Demais'
+         ELSE                          'Não informado' END       AS porte,
     capital                                                      AS capital_social,
     -- O MESMO limiar do etl_cnpj.py (LIMIAR_CAPITAL_SENTINELA), aplicado ao
     -- valor, não ao sorteio que o gerou. Derivar a marca do sorteio deixaria o
     -- seed sempre certo por construção e a regra do ETL nunca seria exercitada
-    -- — inclusive o erro que ela teve na primeira versão, um limiar de R$ 1
-    -- trilhão que passava por cima de um sentinela de 999.999.999.999.
-    (capital >= 500000000000::numeric)                           AS capital_sentinela,
+    -- — inclusive os dois erros que esse limiar já teve: R$ 1 trilhão, que
+    -- passava por baixo de um sentinela de 999.999.999.999, e R$ 500 bilhões,
+    -- que deixava passar uma faixa inteira de valores igualmente impossíveis.
+    (capital >= 250000000000::numeric)                           AS capital_sentinela,
     abertura                                                     AS data_abertura,
     cnae::bigint                                                 AS cnae_fiscal,
     mun::bigint                                                  AS cod_municipio,

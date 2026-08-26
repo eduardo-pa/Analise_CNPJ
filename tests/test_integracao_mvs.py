@@ -396,6 +396,20 @@ def test_limiar_de_sentinela_nao_pega_empresa_real(cur):
     assert cur.fetchone()[0] < 1.0
 
 
+def test_porte_esta_na_gold_e_e_categoria_conhecida(cur):
+    """O porte contextualiza o capital na tabela de maiores capitais.
+
+    "Microempresa, R$ 432 bilhões" se explica sozinho; sem a coluna, o mesmo
+    valor parece apenas um número grande. Se o porte sumir ou vier com rótulo
+    inesperado, a tabela perde o que a torna honesta.
+    """
+    cur.execute("SELECT DISTINCT porte FROM empresas_gold")
+    encontrados = {r[0] for r in cur.fetchall()}
+    validos = {"Microempresa", "Pequeno porte", "Demais", "Não informado"}
+    assert encontrados <= validos, f"porte fora do domínio: {encontrados - validos}"
+    assert "Microempresa" in encontrados
+
+
 def test_nenhuma_mv_de_capital_soma_sentinela(cur):
     """REGRESSÃO do ranking de holdings com R$ 999.999.999.999,00.
 

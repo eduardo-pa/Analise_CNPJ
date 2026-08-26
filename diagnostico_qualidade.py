@@ -283,6 +283,87 @@ def checar_capital(conn) -> bool:
     return bool(contaminado)
 
 
+# ---------------------------------------------------------------------------
+# 3. O pico de baixas de 2008
+# ---------------------------------------------------------------------------
+def checar_pico_2008(conn) -> bool:
+    """O gráfico de natalidade x mortalidade tem um pico isolado em 2008.
+
+    Aberturas seguem a linha da década; as baixas triplicam num ano só e o saldo
+    despenca. Evento assim não é comportamento de mercado — mercado não fecha
+    três milhões de empresas em doze meses e volta ao normal no ano seguinte.
+
+    A hipótese é baixa administrativa em massa: a Receita cancelando de uma vez
+    CNPJs que já estavam abandonados havia anos. Se for isso, a data da baixa
+    diz quando o cadastro foi limpo, não quando as empresas pararam de operar, e
+    ler o pico como mortalidade seria um erro grosseiro.
+
+    O teste é o motivo da baixa: se um único motivo administrativo domina 2008 e
+    não domina os anos vizinhos, está confirmado.
+    """
+    titulo("3. NATALIDADE x MORTALIDADE — o pico de 2008")
+
+    if not existe(conn, "motivos_referencia"):
+        print("  motivos_referencia não existe — rode carregar_referencias.py")
+        return False
+
+    print("\n  [a] Baixas por ano, em volta do pico\n")
+    linhas = tabela(conn, """
+        SELECT EXTRACT(YEAR FROM data_situacao)::int AS ano, count(*) AS baixas
+        FROM empresas_gold
+        WHERE situacao_cadastral = 8 AND data_situacao IS NOT NULL
+          AND EXTRACT(YEAR FROM data_situacao) BETWEEN 2005 AND 2011
+        GROUP BY 1 ORDER BY 1
+    """)
+    for ano, baixas in linhas:
+        barra = "#" * int(40 * baixas / max(b for _, b in linhas))
+        print(f"  {ano}  {baixas:>12,}  {barra}")
+
+    print("\n  [b] Motivo das baixas de 2008\n")
+    linhas = tabela(conn, """
+        SELECT COALESCE(m.descricao, 'Motivo ' || g.motivo_situacao::text) AS motivo,
+               count(*) AS qtd,
+               round(100.0 * count(*) / sum(count(*)) OVER (), 1) AS pct
+        FROM empresas_gold g
+        LEFT JOIN motivos_referencia m ON m.codigo = g.motivo_situacao
+        WHERE g.situacao_cadastral = 8
+          AND EXTRACT(YEAR FROM g.data_situacao) = 2008
+        GROUP BY 1 ORDER BY 2 DESC LIMIT 5
+    """)
+    dominante = None
+    for motivo, qtd, pct in linhas:
+        print(f"  {motivo[:48]:<50}{qtd:>12,}{float(pct):>8.1f}%")
+        if dominante is None:
+            dominante = (motivo, float(pct))
+
+    print("\n  [c] O mesmo motivo nos anos vizinhos\n")
+    if dominante:
+        linhas = tabela(conn, """
+            SELECT EXTRACT(YEAR FROM g.data_situacao)::int AS ano,
+                   round(100.0 * count(*) FILTER (WHERE m.descricao = :motivo)
+                         / NULLIF(count(*), 0), 1) AS pct
+            FROM empresas_gold g
+            LEFT JOIN motivos_referencia m ON m.codigo = g.motivo_situacao
+            WHERE g.situacao_cadastral = 8
+              AND EXTRACT(YEAR FROM g.data_situacao) BETWEEN 2005 AND 2011
+            GROUP BY 1 ORDER BY 1
+        """, {"motivo": dominante[0]})
+        for ano, pct in linhas:
+            print(f"  {ano}: {float(pct or 0):>5.1f}% das baixas por "
+                  f"'{dominante[0][:34]}'")
+
+        print()
+        if dominante[1] > 50:
+            print(f"  >> CONFIRMADO. '{dominante[0][:40]}' responde por")
+            print(f"     {dominante[1]:.1f}% das baixas de 2008. O pico é limpeza de")
+            print("     cadastro, não mortalidade empresarial. A data diz quando a")
+            print("     Receita apagou o registro, não quando a empresa fechou.")
+            return True
+        print(f"  >> Nenhum motivo domina 2008 (o maior tem {dominante[1]:.1f}%).")
+        print("     O pico precisa de outra explicação antes de ir para o texto.")
+    return False
+
+
 def main() -> int:
     print("Diagnóstico de qualidade — base real")
     achados = []
@@ -291,6 +372,8 @@ def main() -> int:
             achados.append("regime tributário enviesado por status atual")
         if checar_capital(conn):
             achados.append("capital social contaminado por valor-sentinela")
+        if checar_pico_2008(conn):
+            achados.append("pico de 2008 é limpeza de cadastro, não mortalidade")
 
     titulo("RESUMO")
     if achados:

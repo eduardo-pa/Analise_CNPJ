@@ -1,0 +1,54 @@
+Porte na Gold, limiar de capital em R$ 250 bi
+
+O ranking de maiores capitais abria com um DEPOSITO DE LENHA E CARVAO
+declarando R$ 432 bilhoes, e com uma microempresa de confeccao sob medida
+em Silves-AM com R$ 464 bilhoes. O limiar de R$ 500 bi pegava os doze
+noves e deixava passar uma faixa inteira de valores igualmente
+impossiveis -- inclusive um agrupamento suspeito de valores quase
+identicos (432,07 / 432,06 / 432,05 / 431,07 bi) em empresas sem relacao
+entre si, em cidades diferentes.
+
+Limiar
+------
+R$ 250 bilhoes. A maior capitalizacao social legitima do Brasil e a da
+Petrobras, ~R$ 205 bi; Itau e Vale ficam abaixo de R$ 100 bi. O corte
+fica 20% acima do maior caso real e nenhuma empresa verdadeira encosta
+nele.
+
+Terceiro valor que esse limiar assume, e os erros anteriores estao
+documentados no codigo: R$ 1 trilhao nao pegava nada (999.999.999.999 e
+um centavo menor que um trilhao) e R$ 500 bi pegava de menos.
+
+Porte
+-----
+Nenhum limiar resolve isto sozinho: erro de digitacao em campo
+autodeclarado e continuo, e abaixo de R$ 250 bi ainda existem valores
+absurdos misturados com valores reais. Filtrar ate parecer plausivel
+seria escolher um numero arbitrario e apresentar o resultado como fato.
+
+A Gold ganhou porte_empresa (ja estava na bronze, nao usado). A tabela
+exibe o porte ao lado do capital e a legenda conta quantas das listadas
+sao microempresas -- que tem teto de receita de R$ 360 mil por ano.
+"Microempresa, R$ 432 bilhoes" se explica sozinho, e mostra ao leitor
+exatamente por que nenhuma metrica do painel usa soma ou media de
+capital.
+
+A secao foi renomeada para "Maiores capitais sociais declarados". Ela nao
+e um ranking das maiores empresas do Brasil e nao deve se apresentar como
+tal.
+
+Pico de 2008
+------------
+Nova secao do diagnostico. As baixas triplicam num ano so e o saldo
+despenca -- mercado nao fecha tres milhoes de empresas em doze meses e
+volta ao normal no ano seguinte. A hipotese e baixa administrativa em
+massa, e o teste e o motivo: se um motivo administrativo domina 2008 e
+nao domina os anos vizinhos, a data diz quando a Receita limpou o
+cadastro, nao quando as empresas fecharam.
+
+O diagnostico faz a pergunta em vez de eu afirmar a resposta.
+
+119 testes; novo teste defende o dominio da coluna porte.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_011mwhJ3B2DzYg8FQC9NhWD2
