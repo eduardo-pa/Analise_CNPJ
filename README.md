@@ -30,8 +30,9 @@ Cada número sai de uma view materializada sobre as 66,7 M de linhas — não de
 
 - **Join de 66,7 M × 69,9 M linhas no PostgreSQL**, não em pandas — a base não cabe em memória. Os CSVs entram por `COPY` direto do ZIP, sem descompactar em disco.
 - **Query-First**: `COUNT`, `SUM`, `percentile_cont` e `GROUP BY` rodam no banco; o Python recebe agregado pronto. Nenhuma consulta do dashboard traz linha crua.
+- **Consultas do painel em milissegundos**: view materializada levou a sobrevivência por setor de 9,4 s para 0,53 ms (~17.700×); índice parcial covering levou o ranking de capital de 12 s para 1,87 ms (~6.400×). [Medições](#-performance)
 - **12 portões de qualidade** que abortam a carga com rollback em vez de gravar dado silenciosamente errado.
-- **118 testes**, dos quais 35 rodam contra um PostgreSQL de verdade — não contra mocks.
+- **119 testes**, dos quais 35 rodam contra um PostgreSQL de verdade — não contra mocks.
 - **CI que renderiza o dashboard inteiro** a cada push, para pegar gráfico que quebra em tela sem quebrar no import.
 - **Base de demonstração sintética**: qualquer pessoa clona e roda em 5 minutos, sem baixar os 7 GB da Receita.
 
@@ -102,7 +103,7 @@ ZIPs da Receita Federal
       │  COPY via stream, sem descompactar em disco
       ▼
   bronze_empresas · bronze_estabelecimentos · bronze_simples · bronze_socios
-      │  join no PostgreSQL + 9 portões de qualidade
+      │  join no PostgreSQL + 12 portões de qualidade
       ▼
   empresas_gold        66,7 M linhas · 1 linha por empresa (matriz)
       │  agregações pré-calculadas
@@ -120,6 +121,40 @@ Decisões que sustentam isso:
 **`UNLOGGED` na bronze.** São tabelas de passagem — pagar WAL por elas é desperdício num carregamento de meia hora.
 
 **Views materializadas em vez de consulta ao vivo.** O painel responde em milissegundos sobre uma tabela de 66,7 M de linhas porque nunca a consulta diretamente.
+
+---
+
+## 📉 Performance
+
+Medições sobre a base completa (**66.682.481 empresas**), média de 5 execuções, em julho/2026:
+
+| Consulta | Antes | Depois | Ganho | Recurso |
+|---|---|---|---|---|
+| Sobrevivência por setor | 9.388 ms | **0,53 ms** | ~17.700× | View materializada `mv_sobrevivencia_setor` |
+| Ranking por capital social | 11.988 ms | **1,87 ms** | ~6.400× | Índice parcial covering `idx_eg_capital_positivo` |
+
+**Pré-agregação na sobrevivência.** A consulta bruta varre as ~31 M de empresas baixadas e calcula mediana e percentis por setor a cada acesso. A view calcula isso uma vez; o painel lê o resultado pronto. O custo não some — muda de lugar, da leitura para o `REFRESH`. Compensa aqui porque a base da Receita é uma foto mensal: o dado só muda quando entra uma nova competência, e aí `refresh_views.py` recalcula as views.
+
+**Índice parcial covering no ranking.** Só ~73% das empresas têm capital social positivo, e o ranking olha apenas essas. O índice cobre exatamente esse recorte, já com as colunas do `JOIN`, e a consulta não precisa voltar à tabela:
+
+```sql
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_eg_capital_positivo
+    ON empresas_gold (capital_social DESC, cnae_fiscal, cod_municipio)
+    WHERE capital_social > 0;
+```
+
+Sem ele, o plano era Seq Scan sobre 66,7 M de linhas.
+
+**Onde nenhum índice ajuda — e por isso não tem:**
+
+| Consulta | Tempo | Por quê |
+|---|---|---|
+| Análise estratégica | 65 ms | Agrega a base inteira — ler tudo é o plano ótimo |
+| Data Quality | 5.181 ms | Conta ocorrências sobre todos os 66,7 M de registros; roda sob demanda, não a cada interação |
+
+Índice só compensa quando descarta a maior parte da tabela. Quando a consulta precisa de quase todas as linhas, Seq Scan **é** o plano correto — forçar um índice deixaria mais lento.
+
+`python benchmark_queries.py` mede as consultas do painel no estado atual do banco, com tempo médio, desvio e o plano do `EXPLAIN ANALYZE`.
 
 ---
 
@@ -181,11 +216,16 @@ A lição, e é a mesma da anterior: **um rótulo pode ser um bug.** `Não infor
 
 **Capital social com doze noves.** O ranking de maiores empresas era uma lista de holdings com exatamente `R$ 999.999.999.999,00` repetido — o teto de um campo de 12 dígitos, preenchido até estourar.
 
-São **169 linhas em 66,7 milhões** — 0,00025% da base — e elas sozinhas respondem por **56,6% do capital declarado do país**. Davam 67% do capital nacional a uma única cidade no gráfico de pizza e punham a média nacional de capital em R$ 5,7 milhões. Nenhuma checagem de completude, tipo ou nulidade pega uma distorção dessas: os 169 valores são numéricos, positivos e preenchidos.
+Acima de R$ 500 bilhões são **169 linhas em 66,7 milhões** — 0,00025% da base — e elas sozinhas respondem por **56,6% do capital declarado do país**. Davam 67% do capital nacional a uma única cidade no gráfico de pizza e punham a média nacional de capital em R$ 5,7 milhões. Nenhuma checagem de completude, tipo ou nulidade pega uma distorção dessas: os 169 valores são numéricos, positivos e preenchidos.
 
-Para calibrar: a maior capitalização social legítima do Brasil está na ordem de R$ 200 bilhões. O corte fica em R$ 500 bilhões — mais que o dobro disso, e ainda assim abaixo dos doze noves.
+Para calibrar: a maior capitalização social legítima do Brasil é a da Petrobras, na ordem de R$ 205 bilhões; Itaú e Vale ficam abaixo de R$ 100 bilhões. O corte fica em **R$ 250 bilhões** — 20% acima do maior caso real, e nenhuma empresa verdadeira encosta nele.
 
-O primeiro limiar que escrevi foi R$ 1 trilhão, "com folga". Ele não pegava nada: `999.999.999.999` é exatamente um centavo *menor* que um trilhão. Um número redondo escolhido por cima de um sentinela que é o teto de um campo passa por baixo dele. Quem pegou foi o `diagnostico_qualidade.py` reportando zero ocorrências numa base onde elas visivelmente existiam.
+Esse limiar errou duas vezes antes de chegar aí:
+
+- **R$ 1 trilhão**, "com folga", não pegava nada: `999.999.999.999` é exatamente um centavo *menor* que um trilhão. Um número redondo escolhido por cima de um sentinela que é o teto de um campo passa por baixo dele. Quem pegou foi o `diagnostico_qualidade.py` reportando zero ocorrências numa base onde elas visivelmente existiam.
+- **R$ 500 bilhões** pegava os doze noves e deixava passar uma faixa inteira de valores igualmente impossíveis. A lista ainda abria com um depósito de lenha e carvão declarando R$ 432 bilhões, e com valores quase idênticos (432,07 / 432,06 / 432,05 / 431,07 bi) em empresas sem relação entre si, em cidades diferentes.
+
+Nenhum limiar resolve isso sozinho: erro de digitação em campo autodeclarado é contínuo, e abaixo do corte ainda há valores absurdos misturados com reais. Filtrar até parecer plausível seria escolher um número arbitrário e apresentá-lo como fato. Por isso a tabela exibe o **porte** da empresa ao lado do capital — uma microempresa declarando bilhões se denuncia sozinha — e a seção se chama "Maiores capitais sociais declarados", não ranking das maiores empresas.
 
 Duas mudanças, e a segunda importa mais que a primeira:
 
