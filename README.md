@@ -20,7 +20,7 @@ Quatro perguntas que a base pública permite responder, e quase nenhuma análise
 | Quanto tempo uma empresa brasileira dura? | Mediana de **3,3 anos** entre as baixadas |
 | Quantas empresas o país tem, de fato? | **66.682.481** registradas · 40,3% ativas · 46,6% baixadas |
 | Empresa brasileira nasce capitalizada? | **26,3%** abrem com capital social zero |
-| Quanto capital tem uma empresa típica? | Mediana de **R$ 5.000** — a média é R$ 2,49 milhões, 498× maior, e não descreve empresa nenhuma |
+| Quanto capital tem uma empresa típica? | Mediana de **R$ 5.000** — a média deu R$ 2,49 milhões na última apuração, 498× maior, e não descreve empresa nenhuma |
 | MEI sobrevive menos? | Comparável safra a safra contra quem **nunca** aderiu ao Simples, controlando pela idade |
 | Empresa de sócio único dura menos? | Comparável por faixa de sócios, dentro da mesma safra |
 
@@ -232,16 +232,18 @@ Duas mudanças, e a segunda importa mais que a primeira:
 1. A Gold marca esses valores em `capital_sentinela`. A empresa **continua na base** e continua contada em toda análise que não seja de capital — o que sai da conta é o valor, não a linha.
 2. O painel passou a exibir **mediana** de capital, não média. E este é o número que mais me surpreendeu no projeto inteiro:
 
-| Sobre capital positivo, já sem nenhum sentinela | |
+| Sobre capital positivo, sem os valores acima de R$ 500 bi | |
 |---|---|
 | Média | R$ 2.490.104,55 |
 | **Mediana** | **R$ 5.000,00** |
 
-A média é **498 vezes** a mediana, e nenhum valor de preenchimento participa dessas duas contas — é a forma da distribuição. A empresa brasileira mediana abre com cinco mil reais de capital social. Qualquer manchete construída sobre a média de capital está descrevendo algumas centenas de holdings.
+Apuração de agosto/2026, feita com o corte anterior, de R$ 500 bilhões. O corte atual, de R$ 250 bilhões, tira da conta mais valores do topo: a média tende a cair um pouco; a mediana, na prática, não se move — a maior parte das empresas perto dela declara exatamente R$ 5.000.
+
+A média foi **498 vezes** a mediana, e isso não é efeito dos doze noves, que já estavam fora da conta — é a forma da distribuição. A empresa brasileira mediana abre com cinco mil reais de capital social. Qualquer manchete construída sobre a média de capital está descrevendo algumas centenas de holdings.
 
 Um portão vigia o próprio limiar: se ele passar a marcar mais de 0,1% da base, deixou de remover preenchimento e começou a remover capital legítimo — que é pior que o problema original.
 
-`diagnostico_qualidade.py` roda as duas investigações contra a base real e imprime a evidência.
+`diagnostico_qualidade.py` roda as duas investigações contra a base real e imprime a evidência. O corte de capital ele lê da própria Gold (`capital_sentinela`), então mede com o mesmo limiar que o painel usa e mostra com qual limiar a base carregada foi construída.
 
 ---
 

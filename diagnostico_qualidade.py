@@ -201,15 +201,19 @@ def checar_capital(conn) -> bool:
     # capitalização social do país está na ordem de R$ 200 bilhões e são
     # pouquíssimas. Nesta faixa dá para listar TUDO e olhar valor por valor,
     # em vez de rankear por frequência.
+    #
+    # A coluna "na Gold" mostra quais valores a camada Gold marcou como
+    # sentinela. O que aparece aqui acima de R$ 100 bi SEM a marca é a faixa que
+    # o limiar deixa passar e o painel trata exibindo o porte da empresa.
     linhas = tabela(conn, """
-        SELECT capital_social, count(*) AS qtd
+        SELECT capital_social, count(*) AS qtd, bool_or(capital_sentinela) AS marcado
         FROM empresas_gold
         WHERE capital_social >= 100000000000
         GROUP BY 1 ORDER BY 1 DESC LIMIT 25
     """)
-    print(f"  {'capital':>26}{'empresas':>12}   observação")
+    print(f"  {'capital':>26}{'empresas':>12}  {'na Gold':<10}observação")
     print("  " + "-" * (LARGURA - 4))
-    for capital, qtd in linhas:
+    for capital, qtd, marcado in linhas:
         texto = f"R$ {float(capital):,.2f}".replace(",", "@").replace(".", ",")
         texto = texto.replace("@", ".")
         nota = ""
@@ -218,17 +222,25 @@ def checar_capital(conn) -> bool:
             nota = "<-- só noves: preenchimento"
         elif s.count("0") >= len(s) - 1 and len(s) >= 11:
             nota = "<-- número redondo suspeito"
-        print(f"  {texto:>26}{qtd:>12,}   {nota}")
+        marca = "sentinela" if marcado else ""
+        print(f"  {texto:>26}{qtd:>12,}  {marca:<10}{nota}")
 
     print("\n  [b] Impacto no total\n")
+    # O corte NÃO é repetido aqui: vem da coluna `capital_sentinela`, que a Gold
+    # grava com LIMIAR_CAPITAL_SENTINELA (etl_cnpj.py). Antes este script tinha
+    # R$ 500 bi escrito à mão e, quando o limiar da Gold desceu para R$ 250 bi,
+    # continuou medindo com o valor antigo. Lendo a coluna, ele mede exatamente
+    # o que o painel exibe — e `menor_marcado` mostra com qual limiar a Gold
+    # carregada foi construída.
     linha = tabela(conn, """
         SELECT
             sum(capital_social)                                   AS total,
-            sum(capital_social) FILTER (WHERE capital_social >= 5e11) AS total_sentinela,
-            count(*) FILTER (WHERE capital_social >= 5e11)         AS qtd_sentinela,
+            sum(capital_social) FILTER (WHERE capital_sentinela)  AS total_sentinela,
+            count(*) FILTER (WHERE capital_sentinela)             AS qtd_sentinela,
+            min(capital_social) FILTER (WHERE capital_sentinela)  AS menor_marcado,
             round(avg(capital_social)::numeric, 2)                 AS media,
             round(avg(capital_social) FILTER
-                  (WHERE capital_social < 5e11)::numeric, 2)       AS media_sem,
+                  (WHERE NOT capital_sentinela)::numeric, 2)       AS media_sem,
             round(percentile_cont(0.5) WITHIN GROUP
                   (ORDER BY capital_social)::numeric, 2)           AS mediana,
             -- A métrica que o painel exibe: mediana sobre capital POSITIVO e
@@ -237,16 +249,19 @@ def checar_capital(conn) -> bool:
             round(percentile_cont(0.5) WITHIN GROUP
                   (ORDER BY capital_social) FILTER
                   (WHERE capital_social > 0
-                     AND capital_social < 5e11)::numeric, 2)       AS mediana_pos,
+                     AND NOT capital_sentinela)::numeric, 2)       AS mediana_pos,
             round(avg(capital_social) FILTER
                   (WHERE capital_social > 0
-                     AND capital_social < 5e11)::numeric, 2)       AS media_pos
+                     AND NOT capital_sentinela)::numeric, 2)       AS media_pos
         FROM empresas_gold
     """)[0]
-    total, tot_sent, qtd_sent, media, media_sem, mediana, mediana_pos, media_pos = linha
+    (total, tot_sent, qtd_sent, menor_marcado, media, media_sem,
+     mediana, mediana_pos, media_pos) = linha
     pct = 100.0 * float(tot_sent or 0) / float(total or 1)
 
-    print(f"  empresas acima de R$ 500 bilhões ....... {qtd_sent:,}")
+    if menor_marcado is not None:
+        print(f"  menor valor marcado como sentinela ...... R$ {float(menor_marcado):,.2f}")
+    print(f"  empresas marcadas como sentinela ........ {qtd_sent:,}")
     print(f"  fatia do capital nacional que elas são .. {pct:.1f}%")
     print(f"  média de capital COM elas ............... R$ {float(media):,.2f}")
     print(f"  média de capital SEM elas ............... R$ {float(media_sem):,.2f}")
@@ -274,7 +289,7 @@ def checar_capital(conn) -> bool:
                g.uf, count(*) AS qtd
         FROM empresas_gold g
         LEFT JOIN municipios_referencia m ON m.codigo = g.cod_municipio
-        WHERE g.capital_social >= 5e11
+        WHERE g.capital_sentinela
         GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 8
     """)
     for cidade, uf, qtd in linhas:
